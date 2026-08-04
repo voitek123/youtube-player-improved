@@ -25,18 +25,6 @@ Everything is toggleable individually from the toolbar popup, which also has a "
 
 Note: temporary add-ons are removed when Firefox restarts and never update on their own — after replacing any file, remove the add-on and load it again (or click "Reload") at the same page.
 
-## Install permanently
-
-Firefox requires extensions to be signed by Mozilla to install permanently in release Firefox. Two options:
-
-- **Firefox Developer Edition / Nightly:** set `xpinstall.signatures.required` to `false` in `about:config`, then drag the packaged `.xpi` (a renamed zip of this folder) into a Firefox window.
-- **Self-distribution with signing:** create a free account at https://addons.mozilla.org, use `web-ext sign` (from the `web-ext` npm package) with your API credentials to get a signed `.xpi`, then install that file normally in any Firefox release.
-
-```
-npm install -g web-ext
-cd youtube-player-improved
-web-ext sign --api-key=YOUR_KEY --api-secret=YOUR_SECRET
-```
 
 ## Works regardless of YouTube's interface language
 
