@@ -1,0 +1,59 @@
+{
+  "manifest_version": 2,
+  "name": "Youtube Player Improved",
+  "version": "1.0",
+  "description": "Set a preferred video quality, lock a fixed volume, prevent Shorts from looping, auto-expand the player, control captions, float a mini player, hide info cards, keep original titles/descriptions/chapters, and prevent accidental Shorts scrolling.",
+  "author": "Youtube Player Improved",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "youtube-player-improved@local.addon",
+      "strict_min_version": "78.0"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "96": "icons/icon96.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "*://*.youtube.com/*",
+    "*://*.youtube-nocookie.com/*"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": false
+  },
+  "browser_action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    },
+    "default_title": "Youtube Player Improved"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://www.youtube.com/*", "*://m.youtube.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "*://www.youtube.com/embed/*",
+        "*://youtube.com/embed/*",
+        "*://www.youtube-nocookie.com/embed/*",
+        "*://youtube-nocookie.com/embed/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

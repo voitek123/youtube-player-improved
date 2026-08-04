@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Youtube Player Improved</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<header>
+  <img src="icons/icon48.png" alt="">
+  <h1>Youtube Player Improved <span class="version" id="version-text"></span></h1>
+  <span id="status-text">Active on YouTube</span>
+  <label class="switch master">
+    <input type="checkbox" id="masterToggle" checked>
+    <span class="slider"></span>
+  </label>
+</header>
+
+<main id="controls">
+
+  <div class="row">
+    <div class="row-label">
+      <span class="row-title">Preferred quality</span>
+      <span class="row-sub">Force this quality on every video</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="resolutionEnabled">
+      <span class="slider"></span>
+    </label>
+  </div>
+  <div class="row sub-row" id="resolutionSubRow" style="display: none;">
+    <select id="preferredResolution">
+      <option value="auto">Auto</option>
+      <option value="hd2160">2160p (4K)</option>
+      <option value="hd1440">1440p</option>
+      <option value="hd1080" selected>1080p</option>
+      <option value="hd720">720p</option>
+      <option value="large">480p</option>
+      <option value="medium">360p</option>
+      <option value="small">240p</option>
+      <option value="tiny">144p</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <div class="row-label">
+      <span class="row-title">Default volume level</span>
+    </div>
+    <span class="row-sub"><span id="volumeValue">50</span>%</span>
+    <label class="switch">
+      <input type="checkbox" id="fixedVolumeEnabled">
+      <span class="slider"></span>
+    </label>
+  </div>
+  <div class="row sub-row" id="volumeSubRow" style="display: none;">
+    <input type="range" id="fixedVolume" min="0" max="100" step="1" value="50">
+  </div>
+
+  <div class="row">
+    <div class="row-label">
+      <span class="row-title">Prevent Shorts from looping</span>
+      <span class="row-sub">Pause instead of replaying</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="stopShortsLoop">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="row">
+    <div class="row-label">
+      <span class="row-title">Auto-expand player</span>
+      <span class="row-sub">Switch to theater size automatically</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="autoExpandEnabled">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="row">
+    <div class="row-label">
+      <span class="row-title">Captions &amp; subtitles</span>
+      <span class="row-sub">Stop them turning on by themselves</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="captionsControlEnabled">
+      <span class="slider"></span>
+    </label>
+  </div>
+  <div class="row sub-row" id="captionsSubRow" style="display: none;">
+    <select id="captionsMode">
+      <option value="off" selected>Always keep off</option>
+      <option value="on">Always keep on</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <div class="row-label">
+      <span class="row-title">Mini player</span>
+      <span class="row-sub">Launch when scrolling down to read comments</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="miniplayerEnabled">
+      <span class="slider"></span>
+    </label>
+  </div>
+  <div class="row sub-row" id="miniplayerSubRow" style="display: none;">
+    <select id="miniplayerSize">
+      <option value="320x180">320x180</option>
+      <option value="400x225" selected>400x225</option>
+      <option value="480x270">480x270</option>
+      <option value="560x315">560x315</option>
+      <option value="640x360">640x360</option>
+      <option value="720x405">720x405</option>
+      <option value="800x450">800x450</option>
+      <option value="880x495">880x495</option>
+      <option value="960x540">960x540</option>
+      <option value="1040x585">1040x585</option>
+      <option value="1120x630">1120x630</option>
+      <option value="1200x675">1200x675</option>
+      <option value="1280x720">1280x720</option>
+    </select>
+    <select id="miniplayerCorner">
+      <option value="top-left">Top left corner</option>
+      <option value="top-right">Top right corner</option>
+      <option value="bottom-left">Bottom left corner</option>
+      <option value="bottom-right" selected>Bottom right corner</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <div class="row-label">
+      <span class="row-title">Hide info cards &amp; end screens</span>
+      <span class="row-sub">Remove the suggestion overlays automatically</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="hideCardsEndscreens">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="row">
+    <div class="row-label">
+      <span class="row-title">No translations</span>
+      <span class="row-sub">Keep original titles, descriptions and chapters</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="noTranslationEnabled">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="row">
+    <div class="row-label">
+      <span class="row-title">Prevent accidental Shorts scrolling</span>
+      <span class="row-sub">Requires a deliberate scroll to switch videos</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="disableShortsWheelScroll">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+</main>
+
+<footer>
+  <button id="resetDefaults">Reset to defaults</button>
+  <a href="https://github.com/voitek123/youtube-player-improved/issues" target="_blank" class="button secondary">Report a bug</a>
+</footer>
+
+<script src="popup.js"></script>
+</body>
+</html>
