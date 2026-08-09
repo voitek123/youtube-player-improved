@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "Youtube Player Improved",
-  "version": "1.0",
-  "description": "Set a preferred video quality, lock a fixed volume, prevent Shorts from looping, auto-expand the player to theater size, control captions, float a mini player when scrolling to comments, hide info cards & end screens, keep original-language titles, descriptions, captions and chapter names, and disable mouse scroll in Shorts on YouTube.",
+  "version": "1.1",
+  "description": "Set a preferred video quality, lock a start volume, prevent Shorts from looping, auto-expand the player, control captions, float a mini player, hide info cards & end screens, keep original titles/descriptions/chapters, prevent accidental Shorts scrolling, block volume scroll and mute hover previews on YouTube.",
   "author": "Youtube Player Improved",
   "browser_specific_settings": {
     "gecko": {

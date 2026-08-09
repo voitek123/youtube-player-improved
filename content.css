@@ -1,12 +1,8 @@
 /* content.css - Youtube Player Improved */
 
-/* Mini player (feature 6). The player element itself (#movie_player)
-   never gets any class, style, or transform from this addon at all - see
-   the large comment in content.js above the mini-player section for why.
-   All positioning and sizing lives on a plain wrapper <div> that the
-   player is placed inside while floating; the player fills it at 1:1
-   with no styling of its own touched. */
-
+/* Mini player. The player element itself (#movie_player) never gets any
+   class, style, or transform from this addon - all positioning/sizing
+   lives on a plain wrapper the player is placed inside while floating. */
 .ycc-mp-wrapper {
   position: fixed !important;
   z-index: 2147483647 !important;
@@ -15,68 +11,21 @@
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55) !important;
   background: #000 !important;
 }
-
-.ycc-mp-corner-br {
-  top: auto !important;
-  left: auto !important;
-  bottom: 20px !important;
-  right: 20px !important;
-}
-
-.ycc-mp-corner-bl {
-  top: auto !important;
-  right: auto !important;
-  bottom: 20px !important;
-  left: 20px !important;
-}
-
-.ycc-mp-corner-tr {
-  bottom: auto !important;
-  left: auto !important;
-  top: 20px !important;
-  right: 20px !important;
-}
-
-.ycc-mp-corner-tl {
-  bottom: auto !important;
-  right: auto !important;
-  top: 20px !important;
-  left: 20px !important;
-}
-
+.ycc-mp-corner-br { top: auto !important; left: auto !important; bottom: 20px !important; right: 20px !important; }
+.ycc-mp-corner-bl { top: auto !important; right: auto !important; bottom: 20px !important; left: 20px !important; }
+.ycc-mp-corner-tr { bottom: auto !important; left: auto !important; top: 20px !important; right: 20px !important; }
+.ycc-mp-corner-tl { bottom: auto !important; right: auto !important; top: 20px !important; left: 20px !important; }
 .ycc-mp-close {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  z-index: 2147483647;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.65);
-  color: #fff;
-  border: none;
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 22px;
-  text-align: center;
-  padding: 0;
-  opacity: 0;
-  transition: opacity 0.15s ease;
+  position: absolute; top: 4px; right: 4px; z-index: 2147483647;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: rgba(0, 0, 0, 0.65); color: #fff; border: none; cursor: pointer;
+  font-size: 13px; line-height: 22px; text-align: center; padding: 0;
+  opacity: 0; transition: opacity 0.15s ease;
 }
+.ycc-mp-wrapper:hover .ycc-mp-close { opacity: 1; }
+.ycc-mp-spacer { flex-shrink: 0; }
 
-.ycc-mp-wrapper:hover .ycc-mp-close {
-  opacity: 1;
-}
-
-.ycc-mp-spacer {
-  flex-shrink: 0;
-}
-
-/* Hide info cards and end screens (feature 7). Toggled by adding/removing
-   ycc-hide-cards-endscreens on <html> in content.js - a pure CSS switch,
-   since these elements just need to not be displayed, not have their
-   underlying behavior changed. */
-
+/* Hide info cards and end screens - pure CSS switch toggled on <html>. */
 .ycc-hide-cards-endscreens .ytp-cards-teaser,
 .ycc-hide-cards-endscreens .ytp-cards-button,
 .ycc-hide-cards-endscreens .ytp-ce-element,
@@ -85,5 +34,14 @@
 .ycc-hide-cards-endscreens .ytp-ce-expanding-overlay,
 .ycc-hide-cards-endscreens .html5-endscreen,
 .ycc-hide-cards-endscreens .iv-module {
+  display: none !important;
+}
+
+/* Hide the player's settings menus while the quality automation drives
+   them programmatically, so the panel never visibly pops open. */
+html.ycc-quiet-menus .ytp-settings-menu,
+html.ycc-quiet-menus .ytp-panel-menu,
+html.ycc-quiet-menus .ytp-panel,
+html.ycc-quiet-menus .ytp-settings-button-menu {
   display: none !important;
 }

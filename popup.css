@@ -1,7 +1,7 @@
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  width: 368px; /* Enlarged ~15% for readability */
+  width: 368px;
   font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
   background: #0f0f13;
   color: #f1f1f3;
@@ -23,7 +23,7 @@ header h1 { font-size: 14px; margin: 0; font-weight: 600; }
 }
 header span#status-text { font-size: 11px; color: #9a9aa5; }
 header .master { margin-left: auto; }
-main#controls { padding: 6px 16px 10px; max-height: 420px; overflow-y: auto; }
+main#controls { padding: 6px 16px 10px; max-height: 460px; overflow-y: auto; }
 .row {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 0; border-bottom: 1px solid #1d1d23;

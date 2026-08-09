@@ -5,6 +5,8 @@ const DEFAULTS = {
   preferredResolution: "hd1080",
   fixedVolumeEnabled: false,
   fixedVolume: 50,
+  disableVolumeWheel: false,
+  muteHoverPreviews: true,
   stopShortsLoop: false,
   autoExpandEnabled: false,
   captionsControlEnabled: false,
@@ -27,6 +29,8 @@ const els = {
   fixedVolume: document.getElementById("fixedVolume"),
   volumeValue: document.getElementById("volumeValue"),
   volumeSubRow: document.getElementById("volumeSubRow"),
+  disableVolumeWheel: document.getElementById("disableVolumeWheel"),
+  muteHoverPreviews: document.getElementById("muteHoverPreviews"),
   stopShortsLoop: document.getElementById("stopShortsLoop"),
   autoExpandEnabled: document.getElementById("autoExpandEnabled"),
   captionsControlEnabled: document.getElementById("captionsControlEnabled"),
@@ -67,6 +71,8 @@ function loadFromSettings(s) {
   els.fixedVolumeEnabled.checked = !!s.fixedVolumeEnabled;
   els.fixedVolume.value = s.fixedVolume ?? 50;
   els.volumeValue.textContent = s.fixedVolume ?? 50;
+  els.disableVolumeWheel.checked = !!s.disableVolumeWheel;
+  els.muteHoverPreviews.checked = !!s.muteHoverPreviews;
   els.stopShortsLoop.checked = !!s.stopShortsLoop;
   els.autoExpandEnabled.checked = !!s.autoExpandEnabled;
   els.captionsControlEnabled.checked = !!s.captionsControlEnabled;
@@ -107,6 +113,12 @@ els.fixedVolume.addEventListener("input", () => {
 });
 els.fixedVolume.addEventListener("change", () => {
   save({ fixedVolume: Number(els.fixedVolume.value) });
+});
+els.disableVolumeWheel.addEventListener("change", () => {
+  save({ disableVolumeWheel: els.disableVolumeWheel.checked });
+});
+els.muteHoverPreviews.addEventListener("change", () => {
+  save({ muteHoverPreviews: els.muteHoverPreviews.checked });
 });
 els.stopShortsLoop.addEventListener("change", () => {
   save({ stopShortsLoop: els.stopShortsLoop.checked });

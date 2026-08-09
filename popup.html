@@ -45,6 +45,7 @@
   <div class="row">
     <div class="row-label">
       <span class="row-title">Default volume level</span>
+      <span class="row-sub">Applied when a video starts; adjust freely afterwards</span>
     </div>
     <span class="row-sub"><span id="volumeValue">50</span>%</span>
     <label class="switch">
@@ -54,6 +55,28 @@
   </div>
   <div class="row sub-row" id="volumeSubRow" style="display: none;">
     <input type="range" id="fixedVolume" min="0" max="100" step="1" value="50">
+  </div>
+
+  <div class="row">
+    <div class="row-label">
+      <span class="row-title">Block volume scroll</span>
+      <span class="row-sub">Mouse wheel over the volume control won't change the volume</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="disableVolumeWheel">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="row">
+    <div class="row-label">
+      <span class="row-title">Mute hover previews</span>
+      <span class="row-sub">Silence videos that play when hovering thumbnails</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="muteHoverPreviews" checked>
+      <span class="slider"></span>
+    </label>
   </div>
 
   <div class="row">
