@@ -4,15 +4,13 @@
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.1.1";
+const BUILD_TAG = "ypi-1.2.0";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
   hd720: "720p", large: "480p", medium: "360p", small: "240p", tiny: "144p",
 };
 const QUALITY_ORDER = ["hd2160", "hd1440", "hd1080", "hd720", "large", "medium", "small", "tiny"];
-// Numeric resolution per key, used to pick the closest LOWER available
-// non-Premium tier when the preferred one isn't selectable.
 const QUALITY_NUM = { hd2160: 2160, hd1440: 1440, hd1080: 1080, hd720: 720, large: 480, medium: 360, small: 240, tiny: 144 };
 
 const KEY_GROUPS = {
@@ -126,13 +124,10 @@ function isOptionLocked(el) {
 // ---------- 1. Preferred quality ----------
 // Drives the real Settings-menu UI (the old setPlaybackQuality() API is
 // silently ignored now). While the automation runs, the menu UI is hidden
-// via the ycc-quiet-menus class so the panel never visibly pops open;
+// with the ycc-quiet-menus class so the panel never visibly pops open;
 // synthetic clicks work on hidden elements. When the preferred resolution
 // isn't selectable (Premium-only), the closest LOWER non-Premium tier is
-// picked by comparing numeric resolutions parsed off the rows - never
-// Auto. Rows are matched by their language-independent "1080p60"-style
-// pattern; "still on Auto" is detected by the parentheses YouTube wraps
-// the auto-picked resolution in.
+// picked by comparing numeric resolutions parsed off the rows - never Auto.
 
 let resolutionInFlight = false;
 
@@ -151,7 +146,7 @@ async function applyResolution() {
 
   const settingsBtn = player.querySelector(".ytp-settings-button");
   if (!settingsBtn) return;
-  if (settingsBtn.getAttribute("aria-expanded") === "true") return; // user has it open
+  if (settingsBtn.getAttribute("aria-expanded") === "true") return;
 
   if (!mpFloating) {
     const rect = player.getBoundingClientRect();
@@ -235,11 +230,8 @@ function scheduleResolutionRetries() {
 }
 
 // ---------- 2. Default volume level (applied at video start) ----------
-// The volume is set ONCE when a video starts playing (main video on the
-// watch page, each new <video> on Shorts). After that the user is free to
-// change the volume however they like - there is no continuous
-// enforcement anymore (earlier versions re-applied it every 500ms and on
-// every volumechange, which fought the user's own adjustments).
+// The volume is set ONCE when a video starts playing; afterwards the
+// volume belongs to the user (no continuous enforcement).
 
 let volumeAppliedUrl = null;
 const volumeAppliedVideos = new WeakSet();
@@ -261,7 +253,6 @@ function setVolumeOnce(video) {
   }
 }
 
-// Capture-phase "play" listener: applies the start volume once per video.
 function onVideoPlayCapture(e) {
   if (!settings || !settings.enabled || !settings.fixedVolumeEnabled) return;
   const v = e.target;
@@ -278,7 +269,6 @@ function onVideoPlayCapture(e) {
   setVolumeOnce(v);
 }
 
-// Used when the toggle or slider changes while a video is already loaded.
 function applyVolumeNow() {
   if (!settings.enabled || !settings.fixedVolumeEnabled) return;
   volumeAppliedUrl = location.href;
@@ -286,9 +276,8 @@ function applyVolumeNow() {
 }
 
 // ---------- 3. Block volume scroll ----------
-// YouTube changes the volume when the mouse wheel is scrolled over the
-// volume control. When this option is on, those wheel events are swallowed
-// in the capture phase so scrolling there can never change the volume.
+// When enabled, wheel events over the player's volume control are
+// swallowed so scrolling there can never change the volume.
 
 function handleVolumeWheel(e) {
   if (!settings || !settings.enabled || !settings.disableVolumeWheel) return;
@@ -301,10 +290,6 @@ function handleVolumeWheel(e) {
 }
 
 // ---------- 4. Mute hover previews ----------
-// Videos that start playing when the mouse hovers a thumbnail (feed hover
-// previews) are kept muted while the option is on. A short interval is
-// used because the preview <video> appears/disappears with the hover.
-
 const HOVER_PREVIEW_SELECTOR =
   "ytd-video-preview, #video-preview, .ytd-video-preview, ytd-video-preview-renderer, #hover-preview";
 
@@ -318,10 +303,7 @@ function startHoverMute() {
   muteHoverPreviews();
   hoverMuteInterval = setInterval(muteHoverPreviews, 600);
 }
-function stopHoverMute() {
-  clearInterval(hoverMuteInterval);
-  hoverMuteInterval = null;
-}
+function stopHoverMute() { clearInterval(hoverMuteInterval); hoverMuteInterval = null; }
 
 // ---------- 5. Prevent Shorts from looping ----------
 const shortsFixed = new WeakSet();
@@ -345,7 +327,6 @@ function fixShortsLoop() {
 }
 const shortsObserver = new MutationObserver((mutations) => {
   if (!settings || !settings.enabled || !isShortsPage()) return;
-  let sawNewVideo = false;
   for (const m of mutations) {
     if (m.type === "attributes" && m.attributeName === "loop") {
       if (settings.stopShortsLoop && m.target instanceof HTMLVideoElement) stripLoop(m.target);
@@ -355,7 +336,6 @@ const shortsObserver = new MutationObserver((mutations) => {
       if (node.nodeType !== 1) return;
       const isVideo = node.tagName === "VIDEO";
       const nestedVideos = node.querySelectorAll ? Array.from(node.querySelectorAll("video")) : [];
-      if (isVideo || nestedVideos.length) sawNewVideo = true;
       if (settings.stopShortsLoop) {
         if (isVideo) neutralizeLoop(node);
         nestedVideos.forEach(neutralizeLoop);
@@ -418,11 +398,11 @@ function scheduleCaptionsRetries() {
 }
 
 // ---------- 8. Mini player when scrolling to comments ----------
-// Playback is never interrupted: the player element is reparented into a
-// plain wrapper <div> appended to <body>; all positioning/sizing happens
-// on the wrapper, never on the player itself. The wrapper keeps the
-// player's natural 16:9 box, scaled to the width chosen in the popup, for
-// the whole video. A sibling spacer holds the original layout spot.
+// The player element is reparented into a plain wrapper <div> appended
+// to <body>; all positioning/sizing happens on the wrapper, never on the
+// player itself. The wrapper keeps the player's natural 16:9 box, scaled
+// to the chosen width, for the whole video. A sibling spacer holds the
+// original layout spot.
 
 const MP_CORNER_CLASSES = ["ycc-mp-corner-tl", "ycc-mp-corner-tr", "ycc-mp-corner-bl", "ycc-mp-corner-br"];
 const MP_CORNER_MAP = { "top-left": "ycc-mp-corner-tl", "top-right": "ycc-mp-corner-tr", "bottom-left": "ycc-mp-corner-bl", "bottom-right": "ycc-mp-corner-br" };
@@ -559,12 +539,10 @@ function applyHideCardsEndscreens() {
 }
 
 // ---------- 10. Prevent auto-translation ----------
-// Keeps creator content original: titles (watch page, tab title/tooltips,
-// feed/search cards, Shorts, notifications, embed title overlay),
-// descriptions (watch page + feed/search snippets) and chapter names.
-// Modeled on the proven "YouTube No Translation" extension (AGPL-3.0):
-// canonical metadata is fetched from /youtubei/v1/player with no hl/gl
-// locale forcing and no cookies; the visible translated text is rewritten.
+// Titles come primarily from the oEmbed endpoint: public, locale-free,
+// always the canonical original title. InnerTube (no hl/gl, no cookies)
+// supplies descriptions and chapters; the watch page (og:title) is the
+// last-resort fallback. Failed lookups are never cached.
 
 const FALLBACK_INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const FALLBACK_INNERTUBE_CLIENT_VERSION = "2.20240111.09.00";
@@ -603,10 +581,30 @@ function fetchWithTimeout(url, options, timeoutMs) {
   return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
+function decodeEntities(s) {
+  const el = document.createElement("textarea");
+  el.innerHTML = s;
+  return el.value;
+}
+
+async function fetchTitleFromWatchPage(videoId) {
+  try {
+    const res = await fetchWithTimeout(
+      "https://www.youtube.com/watch?v=" + encodeURIComponent(videoId) + "&hl=en&persist_hl=1",
+      { credentials: "omit" }, 6000);
+    if (!res.ok) return null;
+    const html = await res.text();
+    const m = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]*)"/);
+    if (!m) return null;
+    const t = decodeEntities(m[1]).replace(/\s*-\s*YouTube\s*$/, "");
+    return t || null;
+  } catch (e) { return null; }
+}
+
 async function fetchDescriptionFallback(videoId) {
   try {
     const res = await fetchWithTimeout(
-      `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}&hl=en&persist_hl=1`,
+      "https://www.youtube.com/watch?v=" + encodeURIComponent(videoId) + "&hl=en&persist_hl=1",
       { credentials: "omit" }, 6000);
     if (!res.ok) return null;
     const html = await res.text();
@@ -702,15 +700,26 @@ function parseChaptersFromDescription(description) {
 }
 
 const videoMetaCache = new Map();
+
 function fetchOriginalVideoMeta(videoId) {
   if (!videoId) return Promise.resolve(null);
   if (videoMetaCache.has(videoId)) return videoMetaCache.get(videoId);
   const promise = (async () => {
     const { apiKey, clientVersion } = extractInnertubeConfig();
     let title = null, description = null, chapters = null;
+
+    // 1) Title from oEmbed - locale-free canonical original.
     try {
       const res = await fetchWithTimeout(
-        `https://www.youtube.com/youtubei/v1/player?key=${encodeURIComponent(apiKey)}`,
+        "https://www.youtube.com/oembed?url=" + encodeURIComponent("https://www.youtube.com/watch?v=" + videoId) + "&format=json",
+        { credentials: "omit" }, 6000);
+      if (res.ok) title = (await res.json()).title || null;
+    } catch (e) { /* fall through */ }
+
+    // 2) Description + chapters (+ title fallback) from InnerTube.
+    try {
+      const res = await fetchWithTimeout(
+        "https://www.youtube.com/youtubei/v1/player?key=" + encodeURIComponent(apiKey),
         {
           method: "POST",
           credentials: "omit",
@@ -724,19 +733,14 @@ function fetchOriginalVideoMeta(videoId) {
         6000);
       if (res.ok) {
         const data = await res.json();
-        title = data?.videoDetails?.title || null;
+        if (!title) title = data?.videoDetails?.title || null;
         description = data?.videoDetails?.shortDescription || null;
         chapters = extractChapters(data);
       }
-    } catch (e) { /* fallbacks below */ }
-    if (!title) {
-      try {
-        const res2 = await fetchWithTimeout(
-          `https://www.youtube.com/oembed?url=${encodeURIComponent("https://www.youtube.com/watch?v=" + videoId)}&format=json`,
-          { credentials: "omit" }, 6000);
-        if (res2.ok) title = (await res2.json()).title || null;
-      } catch (e2) { /* title stays null */ }
-    }
+    } catch (e) { /* fall through */ }
+
+    // 3) Watch-page fallbacks.
+    if (!title) title = await fetchTitleFromWatchPage(videoId);
     if (!description) description = await fetchDescriptionFallback(videoId);
     if (!chapters) chapters = parseChaptersFromDescription(description);
     if (!title) return null;
@@ -999,12 +1003,6 @@ function applyNoTranslation() {
 }
 
 // ---------- 11. Prevent accidental Shorts scrolling ----------
-// Accumulates the scroll delta and only lets the event through to YouTube
-// once a deliberate threshold is crossed; a cooldown stops momentum from
-// switching several Shorts in a row. The whole Shorts stage is covered;
-// side areas (comments, panels, guide, header, shelves) are exempted
-// first and always scroll normally.
-
 let shortsWheelAccumulator = 0, shortsWheelResetTimer = null, shortsWheelCooldown = false;
 const SHORTS_WHEEL_THRESHOLD = 200;
 const SHORTS_WHEEL_COOLDOWN_MS = 800;
@@ -1057,7 +1055,7 @@ function applyAll() {
 
 function onNavigate() {
   clearTimeout(navigateTimer);
-  volumeAppliedUrl = null; // next "play" applies the start volume again
+  volumeAppliedUrl = null;
   navigateTimer = setTimeout(applyAll, 400);
   setTimeout(applyAll, 1200);
 }

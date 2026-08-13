@@ -1,13 +1,13 @@
 # Youtube Player Improved (Firefox Addon)
 
-**Version 1.1**
+**Version 1.2**
 
 A Firefox extension for YouTube with eleven features, all controlled from a single toolbar popup:
 
 - **Preferred quality** – forces a chosen video quality (144p–4K or Auto) on every video, including embedded YouTube players on other sites. If the preferred resolution isn't available (or is Premium-locked), the closest **lower** non-Premium tier is selected instead - never Auto. The settings-menu automation runs with the menu UI hidden, so the settings panel never visibly pops open.
-- **Default volume level** – sets the volume once when a video starts (and once per new Short). After that you can change the volume freely - it is not continuously enforced.
-- **Block volume scroll** – when enabled, scrolling the mouse wheel over the player's volume control no longer changes the volume.
-- **Mute hover previews** – keeps videos that start playing when you hover a thumbnail muted. On by default.
+- **Default volume level** – sets the volume once when a video starts (and once per new Short). After that the volume is fully under your control - no continuous enforcement.
+- **Block volume scroll** – scrolling the mouse wheel over the player's volume control no longer changes the volume.
+- **Mute hover previews** – videos that start playing when you hover a thumbnail stay muted. On by default.
 - **Prevent Shorts from looping** – pauses a Short on its last frame instead of looping forever. Off by default.
 - **Auto-expand player** – automatically switches videos into theater (large) mode.
 - **Captions & subtitles control** – keeps captions always off (or always on), overriding YouTube's auto-detected preference so they don't switch themselves on when a video loads. Also works on embedded YouTube players on other sites.
@@ -27,7 +27,6 @@ Everything is toggleable individually from the toolbar popup, which also has a "
 
 Note: temporary add-ons are removed when Firefox restarts and never update on their own — after replacing any file, remove the add-on and load it again (or click "Reload") at the same page. `content.js` logs a build tag to the Web Console on load (Ctrl+Shift+K on a YouTube tab, then reload), so you can verify the file you replaced is the one running.
 
-
 ## Works regardless of YouTube's interface language
 
 Every feature detects state structurally (DOM attributes, ARIA roles, resolution-number patterns like `1080p60`) rather than by matching English words in menu text, so it works the same whether YouTube is displaying in English, Polish, or anything else:
@@ -35,11 +34,11 @@ Every feature detects state structurally (DOM attributes, ARIA roles, resolution
 - **Quality:** the Quality row and its options are found by their `\d+p` resolution pattern, not the word "Quality"/"Auto" - and "Auto currently showing 1080p" vs. "manually pinned to 1080p" is distinguished by whether the resolution is wrapped in parentheses (how Auto mode always displays it), not by any translated label.
 - **Auto-expand:** reads `ytd-watch-flexy`'s `theater` attribute, a plain boolean flag YouTube sets internally - not the size button's (translated) tooltip text.
 - **Captions:** reads the CC button's `aria-pressed` attribute (`"true"`/`"false"`, not translated).
-- **Fixed volume, Shorts loop-blocking, volume-scroll blocking and hover-preview muting** never depend on any text.
+- **Volume, loop-blocking, volume-scroll blocking and hover-preview muting** never depend on any text.
 
 ## How it works
 
-Quality, volume, captions control, info-card/end-screen hiding, volume-scroll blocking and the no-translation title restoration also run inside embedded YouTube players on third-party sites (`youtube.com/embed/...` and the privacy-enhanced `youtube-nocookie.com/embed/...`, both with and without the `www.` prefix), via a second content-script rule with `all_frames: true` scoped specifically to that URL pattern - so it injects into the embed iframe itself, not into unrelated iframes on the host page. Shorts loop-blocking, auto-expand, and the mini player stay inactive there since none of those concepts apply to a bare embed - they're gated behind checks like the page path starting with `/watch`, which naturally excludes `/embed/...`.
+Quality, volume, captions control, info-card/end-screen hiding, volume-scroll blocking and the no-translation title restoration also run inside embedded YouTube players on third-party sites (`youtube.com/embed/...` and the privacy-enhanced `youtube-nocookie.com/embed/...`, both with and without the `www.` prefix), via a second content-script rule with `all_frames: true` scoped specifically to that URL pattern - so it injects into the embed iframe itself, not into unrelated iframes on the host page. Shorts loop-blocking, auto-expand, and the mini player stay inactive there since none of those concepts apply to a bare embed - they're gated behind checks like the page path starting with `/watch`, which naturally excludes `/embed/...`. Note that if a site sandboxes its embed iframes in a way that blocks scripts entirely, no extension can run inside it - that's a restriction the host page itself is imposing, not something fixable from here.
 
 `content.js` runs on `youtube.com` pages and reacts to YouTube's internal `yt-navigate-finish` event (fired on every SPA navigation) to reapply settings whenever you open a new video, without a full page reload.
 
@@ -65,9 +64,10 @@ Hiding info cards and end screens is a plain CSS switch - a class on `<html>` th
 
 The mini player never resets or reloads the `<video>` element - its playback state is completely undisturbed. While floating, the player is reparented into a plain wrapper `<div>` appended to `<body>`; all positioning/sizing (position:fixed, corner, transform: scale()) happens on the wrapper, never on the player itself (earlier attempts that styled the player directly made YouTube's own code re-layout or panic). The wrapper is sized to the player's natural on-screen box and keeps that 16:9 shape, scaled to the width chosen in the popup, for the entire video. A sibling spacer holds the original layout spot and marks where to move the player back.
 
-No translations fetches each video's canonical (original-language) metadata from YouTube's own `/youtubei/v1/player` endpoint with no `hl`/`gl` locale forcing and no cookies - the translations you see come from YouTube's own localized rendering, while a credential-less request returns the original data - and rewrites the visible text:
+No translations fetches each video's canonical metadata and rewrites the visible translated text:
 
-- **Titles:** watch-page title, tab title and tooltips; feed/search titles keyed off `#video-title`; Shorts titles; notification titles; and the `.ytp-title-link` overlay shown on embedded players - with the video ID taken from each card's own link.
+- **Titles** come primarily from YouTube's oEmbed endpoint - a public, locale-free API that always returns the video's canonical original title. (The InnerTube `/player` endpoint, when called without an explicit language, may honor the browser's Accept-Language header and return an auto-translated title for videos YouTube translates - which is why some feed titles stayed translated before.) InnerTube still supplies descriptions and chapters; the watch page (`og:title`) is the last-resort fallback, and failed lookups are retried instead of being cached.
+- **Titles are restored** on the watch page (including tab title and tooltips), in feed/search cards keyed off `#video-title` (including Shorts and notifications), and on the `.ytp-title-link` overlay shown on embedded players - with the video ID taken from each card's own link.
 - **Descriptions:** the watch-page description (plain-text substitution - clickable timestamps/links within it are lost, a known trade-off) and feed/search snippets. Snippets use the technique proven by the open-source "YouTube No Translation" extension: the translated text lives in `.metadata-snippet-text`, an element YouTube's framework re-renders constantly, so it is hidden with CSS and the original - first two lines, capped at 100 characters - is rendered via `::after { content: attr(data-original-description) }` on the snippet container, which YouTube does not rewrite.
 - **Chapters:** original list from the canonical player response (seekbar markers / chapters panel) or timestamp lines in the original description; the control-bar chip, the seekbar hover pill and the chapters panel rows are rewritten by matching timestamps and re-applied on a short interval so YouTube's re-renders never win.
 - Results are cached per video ID; failed lookups are not cached. YouTube UI chrome strings (view counts, buttons, hints) follow the interface language and are intentionally left untouched - this feature restores creator content only.
