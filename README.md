@@ -1,10 +1,10 @@
 # Youtube Player Improved (Firefox Addon)
 
-**Version 1.2**
+**Version 1.3**
 
 A Firefox extension for YouTube with eleven features, all controlled from a single toolbar popup:
 
-- **Preferred quality** – forces a chosen video quality (144p–4K or Auto) on every video, including embedded YouTube players on other sites. If the preferred resolution isn't available (or is Premium-locked), the closest **lower** non-Premium tier is selected instead - never Auto. The settings-menu automation runs with the menu UI hidden, so the settings panel never visibly pops open.
+- **Preferred quality** – forces a chosen video quality (144p–4K or Auto) on every video, including embedded YouTube players on other sites. If the preferred resolution isn't available (or is Premium-locked), the closest **lower** non-Premium tier is selected instead - never Auto. The "Avoid Premium qualities" toggle (on by default) skips Premium-only rows entirely so the Premium upsell dialog never appears; when no free tier exists below the preferred resolution, the video stays on Auto. The settings-menu automation runs with the menu UI hidden, so the settings panel never visibly pops open.
 - **Default volume level** – sets the volume once when a video starts (and once per new Short). After that the volume is fully under your control - no continuous enforcement.
 - **Block volume scroll** – scrolling the mouse wheel over the player's volume control no longer changes the volume.
 - **Mute hover previews** – videos that start playing when you hover a thumbnail stay muted. On by default.
@@ -31,7 +31,7 @@ Note: temporary add-ons are removed when Firefox restarts and never update on th
 
 Every feature detects state structurally (DOM attributes, ARIA roles, resolution-number patterns like `1080p60`) rather than by matching English words in menu text, so it works the same whether YouTube is displaying in English, Polish, or anything else:
 
-- **Quality:** the Quality row and its options are found by their `\d+p` resolution pattern, not the word "Quality"/"Auto" - and "Auto currently showing 1080p" vs. "manually pinned to 1080p" is distinguished by whether the resolution is wrapped in parentheses (how Auto mode always displays it), not by any translated label.
+- **Quality:** the Quality row and its options are found by their `\d+p` resolution pattern, not the word "Quality"/"Auto" - and "Auto currently showing 1080p" vs. "manually pinned to 1080p" is distinguished by whether the resolution is wrapped in parentheses (how Auto mode always displays it), not by any translated label. Premium rows are detected via the (untranslated) brand term "Premium".
 - **Auto-expand:** reads `ytd-watch-flexy`'s `theater` attribute, a plain boolean flag YouTube sets internally - not the size button's (translated) tooltip text.
 - **Captions:** reads the CC button's `aria-pressed` attribute (`"true"`/`"false"`, not translated).
 - **Volume, loop-blocking, volume-scroll blocking and hover-preview muting** never depend on any text.
@@ -44,7 +44,7 @@ Quality, volume, captions control, info-card/end-screen hiding, volume-scroll bl
 
 Settings are stored with `browser.storage.local` and shared live between the popup and the content script via `storage.onChanged`.
 
-The quality feature drives YouTube's own Settings-menu UI (the old `setPlaybackQuality()` API is silently ignored now), waiting for menus to render instead of guessing delays. While the automation runs, the menu UI is hidden with a temporary CSS class so the settings panel never visibly pops open in a corner; synthetic clicks work on hidden elements just fine, and afterward the gear's `aria-expanded` state is verified so the menu is always left fully closed. Rows are matched by their language-independent resolution pattern; Premium-locked options are skipped; and when the preferred resolution isn't selectable, the closest lower non-Premium tier is picked by comparing the numeric resolutions parsed off the rows - it never falls back to Auto. The automation is skipped entirely when the player is off-screen.
+The quality feature drives YouTube's own Settings-menu UI (the old `setPlaybackQuality()` API is silently ignored now), waiting for menus to render instead of guessing delays. While the automation runs, the menu UI is hidden with a temporary CSS class so the settings panel never visibly pops open in a corner; synthetic clicks work on hidden elements just fine, and afterward the gear's `aria-expanded` state is verified so the menu is always left fully closed. Rows are matched by their language-independent resolution pattern; Premium-locked options are skipped; and when the preferred resolution isn't selectable, the closest lower non-Premium tier is picked by comparing the numeric resolutions parsed off the rows - it never falls back to Auto. With "Avoid Premium qualities" enabled (default), rows whose label contains the (untranslated) brand term "Premium" are treated as unavailable, so the Premium upsell dialog is never triggered; if no free tier exists at or below the preferred resolution, the automation leaves the video on Auto instead of clicking anything. The automation is skipped entirely when the player is off-screen.
 
 The default volume level is applied once per video through a capture-phase `play` listener (the main `<video>` on the watch page, each new `<video>` on Shorts), writing through the player's `setVolume()` API and the raw element in parallel so the slider and the audible level agree. There is deliberately no continuous enforcement: after the video starts, the volume belongs to the user. Toggling the feature or moving the slider while a video is loaded applies the new level immediately.
 

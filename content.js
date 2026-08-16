@@ -4,7 +4,7 @@
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.2.0";
+const BUILD_TAG = "ypi-1.3.0";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -14,7 +14,7 @@ const QUALITY_ORDER = ["hd2160", "hd1440", "hd1080", "hd720", "large", "medium",
 const QUALITY_NUM = { hd2160: 2160, hd1440: 1440, hd1080: 1080, hd720: 720, large: 480, medium: 360, small: 240, tiny: 144 };
 
 const KEY_GROUPS = {
-  resolution: ["enabled", "resolutionEnabled", "preferredResolution"],
+  resolution: ["enabled", "resolutionEnabled", "preferredResolution", "avoidPremiumQualities"],
   volume: ["enabled", "fixedVolumeEnabled", "fixedVolume"],
   wheel: ["enabled", "disableVolumeWheel"],
   hover: ["enabled", "muteHoverPreviews"],
@@ -124,10 +124,13 @@ function isOptionLocked(el) {
 // ---------- 1. Preferred quality ----------
 // Drives the real Settings-menu UI (the old setPlaybackQuality() API is
 // silently ignored now). While the automation runs, the menu UI is hidden
-// with the ycc-quiet-menus class so the panel never visibly pops open;
-// synthetic clicks work on hidden elements. When the preferred resolution
-// isn't selectable (Premium-only), the closest LOWER non-Premium tier is
-// picked by comparing numeric resolutions parsed off the rows - never Auto.
+// with the ycc-quiet-menus class so the panel never visibly pops open.
+// Premium-only rows (e.g. "1080p Premium") open a Premium upsell dialog
+// when clicked, so with "Avoid Premium qualities" on (default) they are
+// treated as unavailable - "Premium" is a brand term and is not
+// translated, so matching on it is language-safe. When no free tier
+// exists at or below the preferred resolution, nothing is clicked and
+// the video stays on Auto instead of triggering the upsell.
 
 let resolutionInFlight = false;
 
@@ -138,6 +141,7 @@ async function applyResolution() {
   const player = getPlayer();
   if (!player || isAdShowing(player)) return;
   const desired = settings.preferredResolution || "hd1080";
+  const avoidPremium = settings.avoidPremiumQualities !== false;
 
   try {
     if (typeof player.setPlaybackQualityRange === "function") player.setPlaybackQualityRange(desired, desired);
@@ -189,7 +193,10 @@ async function applyResolution() {
     }, 1500);
 
     if (options) {
-      const selectable = options.filter((o) => !isOptionLocked(o));
+      const isPremiumRow = (o) =>
+        /premium/i.test(o.textContent || "") ||
+        !!o.querySelector('[class*="premium" i], [class*="lock-icon" i]');
+      const selectable = options.filter((o) => !isOptionLocked(o) && !(avoidPremium && isPremiumRow(o)));
       const resOf = (o) => { const m = (o.textContent || "").match(/(\d{2,4})p/); return m ? parseInt(m[1], 10) : 0; };
       let target = null;
       if (desired === "auto") {
@@ -197,8 +204,10 @@ async function applyResolution() {
       } else {
         const desiredNum = QUALITY_NUM[desired] || 1080;
         const numbered = selectable.map((o) => ({ o, n: resOf(o) })).filter((x) => x.n > 0);
+        // Closest lower (or equal) free tier; if none exists, don't click
+        // anything (stay on Auto) instead of risking the Premium upsell.
         const lowerClosest = numbered.filter((x) => x.n <= desiredNum).sort((a, b) => b.n - a.n)[0];
-        target = lowerClosest ? lowerClosest.o : (numbered.sort((a, b) => a.n - b.n)[0] || {}).o || null;
+        target = lowerClosest ? lowerClosest.o : null;
       }
       if (target) target.click();
     }
@@ -230,9 +239,6 @@ function scheduleResolutionRetries() {
 }
 
 // ---------- 2. Default volume level (applied at video start) ----------
-// The volume is set ONCE when a video starts playing; afterwards the
-// volume belongs to the user (no continuous enforcement).
-
 let volumeAppliedUrl = null;
 const volumeAppliedVideos = new WeakSet();
 
@@ -276,9 +282,6 @@ function applyVolumeNow() {
 }
 
 // ---------- 3. Block volume scroll ----------
-// When enabled, wheel events over the player's volume control are
-// swallowed so scrolling there can never change the volume.
-
 function handleVolumeWheel(e) {
   if (!settings || !settings.enabled || !settings.disableVolumeWheel) return;
   if (!(e.target instanceof Element)) return;
@@ -398,12 +401,6 @@ function scheduleCaptionsRetries() {
 }
 
 // ---------- 8. Mini player when scrolling to comments ----------
-// The player element is reparented into a plain wrapper <div> appended
-// to <body>; all positioning/sizing happens on the wrapper, never on the
-// player itself. The wrapper keeps the player's natural 16:9 box, scaled
-// to the chosen width, for the whole video. A sibling spacer holds the
-// original layout spot.
-
 const MP_CORNER_CLASSES = ["ycc-mp-corner-tl", "ycc-mp-corner-tr", "ycc-mp-corner-bl", "ycc-mp-corner-br"];
 const MP_CORNER_MAP = { "top-left": "ycc-mp-corner-tl", "top-right": "ycc-mp-corner-tr", "bottom-left": "ycc-mp-corner-bl", "bottom-right": "ycc-mp-corner-br" };
 const MP_ORIGIN_MAP = { "top-left": "top left", "top-right": "top right", "bottom-left": "bottom left", "bottom-right": "bottom right" };
@@ -581,10 +578,18 @@ function fetchWithTimeout(url, options, timeoutMs) {
   return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
+// Static HTML-entity decoder (no DOM, no innerHTML) - keeps Mozilla's
+// linter happy while still cleaning og:title values.
 function decodeEntities(s) {
-  const el = document.createElement("textarea");
-  el.innerHTML = s;
-  return el.value;
+  return String(s)
+    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (m, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&nbsp;/g, "\u00a0")
+    .replace(/&amp;/g, "&");
 }
 
 async function fetchTitleFromWatchPage(videoId) {
@@ -689,7 +694,7 @@ function parseChaptersFromDescription(description) {
     if (!before && !after) return;
     const ts = m[1], idx = m.index;
     let title;
-    if (idx === 0 || /^[-–—•·▪▫‣⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
+    if (idx === 0 || /^[-–—•·▪▫⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
     else title = trimmed.substring(0, idx);
     title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫‣⁃→>*\s]+$/, "").trim();
     if (title.length < 2) return;
