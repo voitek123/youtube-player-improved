@@ -1,6 +1,6 @@
 # Youtube Player Improved (Firefox Addon)
 
-**Version 1.3**
+**Version 1.3.1**
 
 A Firefox extension for YouTube with eleven features, all controlled from a single toolbar popup:
 
@@ -44,7 +44,7 @@ Quality, volume, captions control, info-card/end-screen hiding, volume-scroll bl
 
 Settings are stored with `browser.storage.local` and shared live between the popup and the content script via `storage.onChanged`.
 
-The quality feature drives YouTube's own Settings-menu UI (the old `setPlaybackQuality()` API is silently ignored now), waiting for menus to render instead of guessing delays. While the automation runs, the menu UI is hidden with a temporary CSS class so the settings panel never visibly pops open in a corner; synthetic clicks work on hidden elements just fine, and afterward the gear's `aria-expanded` state is verified so the menu is always left fully closed. Rows are matched by their language-independent resolution pattern; Premium-locked options are skipped; and when the preferred resolution isn't selectable, the closest lower non-Premium tier is picked by comparing the numeric resolutions parsed off the rows - it never falls back to Auto. With "Avoid Premium qualities" enabled (default), rows whose label contains the (untranslated) brand term "Premium" are treated as unavailable, so the Premium upsell dialog is never triggered; if no free tier exists at or below the preferred resolution, the automation leaves the video on Auto instead of clicking anything. The automation is skipped entirely when the player is off-screen.
+The quality feature drives YouTube's own Settings-menu UI only. The old `setPlaybackQuality()` JS API is silently ignored for most viewers, and calling it with a tier above the free maximum could pop the Premium upsell dialog (which then blocked the menu automation and left the video on Auto), so it has been removed. While the automation runs, the menu UI is hidden with a temporary CSS class so the settings panel never visibly pops open in a corner; synthetic clicks work on hidden elements just fine, and afterward the gear's `aria-expanded` state is verified so the menu is always left fully closed. Rows are matched by their language-independent resolution pattern; Premium-locked options are skipped; and when the preferred resolution isn't selectable, the closest lower non-Premium tier is picked by comparing the numeric resolutions parsed off the rows - it never falls back to Auto. With "Avoid Premium qualities" enabled (default), rows whose label contains the (untranslated) brand term "Premium" are treated as unavailable, so the Premium upsell dialog is never triggered; if no free tier exists at or below the preferred resolution, the automation leaves the video on Auto instead of clicking anything. The automation is skipped entirely when the player is off-screen.
 
 The default volume level is applied once per video through a capture-phase `play` listener (the main `<video>` on the watch page, each new `<video>` on Shorts), writing through the player's `setVolume()` API and the raw element in parallel so the slider and the audible level agree. There is deliberately no continuous enforcement: after the video starts, the volume belongs to the user. Toggling the feature or moving the slider while a video is loaded applies the new level immediately.
 

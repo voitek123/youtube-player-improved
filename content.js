@@ -4,7 +4,7 @@
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.0";
+const BUILD_TAG = "ypi-1.3.1";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -122,15 +122,18 @@ function isOptionLocked(el) {
 }
 
 // ---------- 1. Preferred quality ----------
-// Drives the real Settings-menu UI (the old setPlaybackQuality() API is
-// silently ignored now). While the automation runs, the menu UI is hidden
-// with the ycc-quiet-menus class so the panel never visibly pops open.
-// Premium-only rows (e.g. "1080p Premium") open a Premium upsell dialog
-// when clicked, so with "Avoid Premium qualities" on (default) they are
-// treated as unavailable - "Premium" is a brand term and is not
-// translated, so matching on it is language-safe. When no free tier
-// exists at or below the preferred resolution, nothing is clicked and
-// the video stays on Auto instead of triggering the upsell.
+// Drives the real Settings-menu UI only. The old setPlaybackQuality()/
+// setPlaybackQualityRange() JS API is silently ignored for most viewers,
+// and - worse - calling it with a tier above the free maximum (e.g.
+// asking for 1440p when only 1080p free + 1080p Premium exist) makes
+// YouTube pop the Premium upsell dialog, which then blocked the menu
+// automation and left the video on Auto. Those legacy calls are removed.
+// While the automation runs, the menu UI is hidden with the
+// ycc-quiet-menus class so the panel never visibly pops open. Premium
+// rows ("Premium" is an untranslated brand term, so matching on it is
+// language-safe) are treated as unavailable when "Avoid Premium
+// qualities" is on (default). When no free tier exists at or below the
+// preferred resolution, nothing is clicked and the video stays on Auto.
 
 let resolutionInFlight = false;
 
@@ -142,11 +145,6 @@ async function applyResolution() {
   if (!player || isAdShowing(player)) return;
   const desired = settings.preferredResolution || "hd1080";
   const avoidPremium = settings.avoidPremiumQualities !== false;
-
-  try {
-    if (typeof player.setPlaybackQualityRange === "function") player.setPlaybackQualityRange(desired, desired);
-    if (typeof player.setPlaybackQuality === "function") player.setPlaybackQuality(desired);
-  } catch (e) { /* ignore */ }
 
   const settingsBtn = player.querySelector(".ytp-settings-button");
   if (!settingsBtn) return;
@@ -694,7 +692,7 @@ function parseChaptersFromDescription(description) {
     if (!before && !after) return;
     const ts = m[1], idx = m.index;
     let title;
-    if (idx === 0 || /^[-–—•·▪▫⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
+    if (idx === 0 || /^[-–—•·▪▫‣⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
     else title = trimmed.substring(0, idx);
     title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫‣⁃→>*\s]+$/, "").trim();
     if (title.length < 2) return;
