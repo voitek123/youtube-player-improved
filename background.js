@@ -6,7 +6,7 @@ const DEFAULT_SETTINGS = {
   // 1. Preferred quality
   resolutionEnabled: false,
   preferredResolution: "hd1080",
-  avoidPremiumQualities: true,
+  blockPremiumPromos: true,
   // 2. Default volume level (applied when a video starts)
   fixedVolumeEnabled: false,
   fixedVolume: 50, // 0 - 100

@@ -1,8 +1,9 @@
 /* content.css - Youtube Player Improved */
 
-/* Mini player. The player element itself (#movie_player) never gets any
-   class, style, or transform from this addon - all positioning/sizing
-   lives on a plain wrapper the player is placed inside while floating. */
+/* Mini player. The player element (#movie_player) itself never receives
+   any class, style or transform from this addon - all positioning and
+   sizing lives on a plain wrapper the player is moved into while
+   floating. */
 .ycc-mp-wrapper {
   position: fixed !important;
   z-index: 2147483647 !important;

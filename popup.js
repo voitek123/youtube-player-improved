@@ -3,7 +3,7 @@ const DEFAULTS = {
   enabled: true,
   resolutionEnabled: false,
   preferredResolution: "hd1080",
-  avoidPremiumQualities: true,
+  blockPremiumPromos: true,
   fixedVolumeEnabled: false,
   fixedVolume: 50,
   disableVolumeWheel: false,
@@ -25,7 +25,7 @@ const els = {
   versionText: document.getElementById("version-text"),
   resolutionEnabled: document.getElementById("resolutionEnabled"),
   preferredResolution: document.getElementById("preferredResolution"),
-  avoidPremiumQualities: document.getElementById("avoidPremiumQualities"),
+  blockPremiumPromos: document.getElementById("blockPremiumPromos"),
   resolutionSubRow: document.getElementById("resolutionSubRow"),
   fixedVolumeEnabled: document.getElementById("fixedVolumeEnabled"),
   fixedVolume: document.getElementById("fixedVolume"),
@@ -70,7 +70,7 @@ function loadFromSettings(s) {
   els.master.checked = !!s.enabled;
   els.resolutionEnabled.checked = !!s.resolutionEnabled;
   els.preferredResolution.value = s.preferredResolution || "hd1080";
-  els.avoidPremiumQualities.checked = !!s.avoidPremiumQualities;
+  els.blockPremiumPromos.checked = !!s.blockPremiumPromos;
   els.fixedVolumeEnabled.checked = !!s.fixedVolumeEnabled;
   els.fixedVolume.value = s.fixedVolume ?? 50;
   els.volumeValue.textContent = s.fixedVolume ?? 50;
@@ -107,8 +107,8 @@ els.resolutionEnabled.addEventListener("change", () => {
 els.preferredResolution.addEventListener("change", () => {
   save({ preferredResolution: els.preferredResolution.value });
 });
-els.avoidPremiumQualities.addEventListener("change", () => {
-  save({ avoidPremiumQualities: els.avoidPremiumQualities.checked });
+els.blockPremiumPromos.addEventListener("change", () => {
+  save({ blockPremiumPromos: els.blockPremiumPromos.checked });
 });
 els.fixedVolumeEnabled.addEventListener("change", () => {
   save({ fixedVolumeEnabled: els.fixedVolumeEnabled.checked });

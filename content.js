@@ -4,7 +4,7 @@
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.1";
+const BUILD_TAG = "ypi-1.3.2";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -14,7 +14,7 @@ const QUALITY_ORDER = ["hd2160", "hd1440", "hd1080", "hd720", "large", "medium",
 const QUALITY_NUM = { hd2160: 2160, hd1440: 1440, hd1080: 1080, hd720: 720, large: 480, medium: 360, small: 240, tiny: 144 };
 
 const KEY_GROUPS = {
-  resolution: ["enabled", "resolutionEnabled", "preferredResolution", "avoidPremiumQualities"],
+  resolution: ["enabled", "resolutionEnabled", "preferredResolution", "blockPremiumPromos"],
   volume: ["enabled", "fixedVolumeEnabled", "fixedVolume"],
   wheel: ["enabled", "disableVolumeWheel"],
   hover: ["enabled", "muteHoverPreviews"],
@@ -28,10 +28,11 @@ const KEY_GROUPS = {
 
 let settings = {};
 let navigateTimer = null;
-let resolutionRetryTimer = null;
 let captionsRetryTimer = null;
 let shortsSweepInterval = null;
 let hoverMuteInterval = null;
+let qualityAppliedUrl = null;
+let expandAppliedUrl = null;
 
 // ---------- Settings ----------
 
@@ -45,13 +46,16 @@ browser.storage.onChanged.addListener((changes, area) => {
   const changedKeys = Object.keys(changes);
   for (const key of changedKeys) settings[key] = changes[key].newValue;
 
-  if (changedKeys.some((k) => KEY_GROUPS.resolution.includes(k))) { applyResolution(); scheduleResolutionRetries(); }
+  if (changedKeys.some((k) => KEY_GROUPS.resolution.includes(k))) {
+    qualityAppliedUrl = null; // a settings change may re-apply quality
+    applyResolution();
+  }
   if (changedKeys.some((k) => KEY_GROUPS.volume.includes(k))) applyVolumeNow();
   if (changedKeys.some((k) => KEY_GROUPS.hover.includes(k))) {
     if (settings.enabled && settings.muteHoverPreviews) startHoverMute(); else stopHoverMute();
   }
   if (changedKeys.some((k) => KEY_GROUPS.shorts.includes(k))) { fixShortsLoop(); startShortsSweep(); }
-  if (changedKeys.some((k) => KEY_GROUPS.expand.includes(k))) autoExpandPlayer();
+  if (changedKeys.some((k) => KEY_GROUPS.expand.includes(k))) { expandAppliedUrl = null; autoExpandPlayer(); }
   if (changedKeys.some((k) => KEY_GROUPS.captions.includes(k))) { applyCaptions(); scheduleCaptionsRetries(); }
   if (changedKeys.some((k) => KEY_GROUPS.miniplayer.includes(k))) {
     const structuralChange = changedKeys.includes("enabled") || changedKeys.includes("miniplayerEnabled");
@@ -121,19 +125,56 @@ function isOptionLocked(el) {
   return false;
 }
 
+// ---------- Premium upsell suppression ----------
+// YouTube can pop a Premium upsell dialog on its own (or as a reaction to
+// the quality menu being opened). When "Never show Premium promos" is on
+// (default), such dialogs are hidden in the same frame they are inserted
+// - MutationObserver callbacks run before the next paint, so the user
+// never sees them, not even a flash - and the node is removed shortly
+// after. No on-screen button is ever pressed. Scope is limited to
+// centered dialogs; page banners are left alone.
+
+const PREMIUM_DIALOG_SELECTOR = 'tp-yt-paper-dialog, [role="dialog"]';
+
+function suppressPremiumDialogs(root) {
+  if (!(root instanceof Element)) return;
+  const nodes = [];
+  if (root.matches && root.matches(PREMIUM_DIALOG_SELECTOR)) nodes.push(root);
+  if (root.querySelectorAll) root.querySelectorAll(PREMIUM_DIALOG_SELECTOR).forEach((n) => nodes.push(n));
+  for (const dlg of nodes) {
+    if (dlg.dataset.yccSuppressed) continue;
+    const text = dlg.textContent || "";
+    if (!/premium/i.test(text)) continue;
+    if (!dlg.querySelector("button, yt-button-shape, a")) continue;
+    dlg.dataset.yccSuppressed = "1";
+    dlg.style.display = "none";
+    setTimeout(() => { try { dlg.remove(); } catch (e) {} }, 1000);
+  }
+}
+
+let premiumSuppressObserver = null;
+function startPremiumSuppressor() {
+  if (premiumSuppressObserver) return;
+  premiumSuppressObserver = new MutationObserver((muts) => {
+    if (!settings || !settings.enabled) return;
+    if (settings.blockPremiumPromos === false) return;
+    for (const m of muts) m.addedNodes.forEach((n) => suppressPremiumDialogs(n));
+  });
+  premiumSuppressObserver.observe(document.documentElement, { childList: true, subtree: true });
+}
+
 // ---------- 1. Preferred quality ----------
-// Drives the real Settings-menu UI only. The old setPlaybackQuality()/
-// setPlaybackQualityRange() JS API is silently ignored for most viewers,
-// and - worse - calling it with a tier above the free maximum (e.g.
-// asking for 1440p when only 1080p free + 1080p Premium exist) makes
-// YouTube pop the Premium upsell dialog, which then blocked the menu
-// automation and left the video on Auto. Those legacy calls are removed.
-// While the automation runs, the menu UI is hidden with the
-// ycc-quiet-menus class so the panel never visibly pops open. Premium
-// rows ("Premium" is an untranslated brand term, so matching on it is
-// language-safe) are treated as unavailable when "Avoid Premium
-// qualities" is on (default). When no free tier exists at or below the
-// preferred resolution, nothing is clicked and the video stays on Auto.
+// Drives the real Settings-menu UI only (the old setPlaybackQuality() JS
+// API is silently ignored for most viewers, and calling it with a tier
+// above the free maximum popped the Premium upsell, so it was removed).
+// The automation runs AT MOST ONCE per video URL - the old retry loop
+// re-clicked quality rows and forced repeated stream reloads, which made
+// videos visibly restart 2-3 times after launch. While the automation
+// runs, the menu UI is hidden with the ycc-quiet-menus class. With
+// "Never show Premium promos" on (default), Premium rows are skipped and
+// the closest lower free tier is picked; if no free tier exists at or
+// below the preferred resolution, nothing is clicked and the video stays
+// on Auto.
 
 let resolutionInFlight = false;
 
@@ -141,10 +182,11 @@ async function applyResolution() {
   if (!settings.enabled || !settings.resolutionEnabled) return;
   if (resolutionInFlight) return;
   if (isShortsPage()) return;
+  if (qualityAppliedUrl === location.href) return; // already handled this video
   const player = getPlayer();
   if (!player || isAdShowing(player)) return;
   const desired = settings.preferredResolution || "hd1080";
-  const avoidPremium = settings.avoidPremiumQualities !== false;
+  const blockPromos = settings.blockPremiumPromos !== false;
 
   const settingsBtn = player.querySelector(".ytp-settings-button");
   if (!settingsBtn) return;
@@ -168,7 +210,7 @@ async function applyResolution() {
       const items = Array.from(player.querySelectorAll(ITEM_SELECTOR));
       return items.length ? items : null;
     }, 1500);
-    if (!menuItems) return;
+    if (!menuItems) return; // player not ready yet - the 4s pass may retry
 
     const qualityItem = menuItems.find((mi) => {
       const contentText = mi.querySelector(".ytp-menuitem-content")?.textContent || mi.textContent || "";
@@ -176,40 +218,44 @@ async function applyResolution() {
     });
     if (!qualityItem) return;
 
+    // We've done our job for this video either way - never re-run the
+    // automation (that's what caused the repeated stream reloads).
+    qualityAppliedUrl = location.href;
+
     const desiredLabel = QUALITY_LABELS[desired] || "1080p";
     const currentLabelText = (qualityItem.querySelector(".ytp-menuitem-content")?.textContent || qualityItem.textContent || "").trim();
     const isCurrentlyAuto = currentLabelText.includes("(");
     const alreadyCorrect = desired === "auto" ? isCurrentlyAuto : !isCurrentlyAuto && currentLabelText.startsWith(desiredLabel);
-    if (alreadyCorrect) return;
+    if (!alreadyCorrect) {
+      qualityItem.click();
 
-    qualityItem.click();
+      const options = await waitFor(() => {
+        const radios = Array.from(player.querySelectorAll('.ytp-panel-menu [role="menuitemradio"], .ytp-settings-menu [role="menuitemradio"]'));
+        const items = radios.length ? radios : Array.from(player.querySelectorAll(ITEM_SELECTOR));
+        return items.length ? items : null;
+      }, 1500);
 
-    const options = await waitFor(() => {
-      const radios = Array.from(player.querySelectorAll('.ytp-panel-menu [role="menuitemradio"], .ytp-settings-menu [role="menuitemradio"]'));
-      const items = radios.length ? radios : Array.from(player.querySelectorAll(ITEM_SELECTOR));
-      return items.length ? items : null;
-    }, 1500);
-
-    if (options) {
-      const isPremiumRow = (o) =>
-        /premium/i.test(o.textContent || "") ||
-        !!o.querySelector('[class*="premium" i], [class*="lock-icon" i]');
-      const selectable = options.filter((o) => !isOptionLocked(o) && !(avoidPremium && isPremiumRow(o)));
-      const resOf = (o) => { const m = (o.textContent || "").match(/(\d{2,4})p/); return m ? parseInt(m[1], 10) : 0; };
-      let target = null;
-      if (desired === "auto") {
-        target = selectable.find((o) => !resOf(o)) || null;
-      } else {
-        const desiredNum = QUALITY_NUM[desired] || 1080;
-        const numbered = selectable.map((o) => ({ o, n: resOf(o) })).filter((x) => x.n > 0);
-        // Closest lower (or equal) free tier; if none exists, don't click
-        // anything (stay on Auto) instead of risking the Premium upsell.
-        const lowerClosest = numbered.filter((x) => x.n <= desiredNum).sort((a, b) => b.n - a.n)[0];
-        target = lowerClosest ? lowerClosest.o : null;
+      if (options) {
+        // "Premium" is an untranslated brand term, so matching on it is
+        // language-safe.
+        const isPremiumRow = (o) =>
+          /premium/i.test(o.textContent || "") ||
+          !!o.querySelector('[class*="premium" i], [class*="lock-icon" i]');
+        const selectable = options.filter((o) => !isOptionLocked(o) && !(blockPromos && isPremiumRow(o)));
+        const resOf = (o) => { const m = (o.textContent || "").match(/(\d{2,4})p/); return m ? parseInt(m[1], 10) : 0; };
+        let target = null;
+        if (desired === "auto") {
+          target = selectable.find((o) => !resOf(o)) || null;
+        } else {
+          const desiredNum = QUALITY_NUM[desired] || 1080;
+          const numbered = selectable.map((o) => ({ o, n: resOf(o) })).filter((x) => x.n > 0);
+          const lowerClosest = numbered.filter((x) => x.n <= desiredNum).sort((a, b) => b.n - a.n)[0];
+          target = lowerClosest ? lowerClosest.o : null;
+        }
+        if (target) target.click();
       }
-      if (target) target.click();
+      await wait(150);
     }
-    await wait(150);
   } catch (e) { /* ignore - finally still closes the menu */ }
   finally {
     document.documentElement.classList.remove("ycc-quiet-menus");
@@ -221,19 +267,9 @@ async function applyResolution() {
       settingsBtn.click();
       await wait(120);
     }
+    if (blockPromos) setTimeout(() => suppressPremiumDialogs(document.body), 300);
     resolutionInFlight = false;
   }
-}
-
-function scheduleResolutionRetries() {
-  clearInterval(resolutionRetryTimer);
-  if (!settings.enabled || !settings.resolutionEnabled) return;
-  let attempts = 0;
-  resolutionRetryTimer = setInterval(() => {
-    attempts++;
-    applyResolution();
-    if (attempts >= 5) clearInterval(resolutionRetryTimer);
-  }, 2500);
 }
 
 // ---------- 2. Default volume level (applied at video start) ----------
@@ -365,8 +401,12 @@ function isTheaterActive() {
 }
 function autoExpandPlayer() {
   if (!settings.enabled || !settings.autoExpandEnabled || !isWatchPage()) return;
+  if (expandAppliedUrl === location.href) return; // once per video
   const sizeButton = document.querySelector(".ytp-size-button");
-  if (sizeButton && !isTheaterActive()) sizeButton.click();
+  if (!sizeButton) return;
+  if (isTheaterActive()) { expandAppliedUrl = location.href; return; }
+  sizeButton.click();
+  expandAppliedUrl = location.href;
 }
 
 // ---------- 7. Captions / subtitles control ----------
@@ -1045,7 +1085,6 @@ function handleShortsWheel(e) {
 function applyAll() {
   if (!settings) return;
   applyResolution();
-  scheduleResolutionRetries();
   fixShortsLoop();
   startShortsSweep();
   autoExpandPlayer();
@@ -1059,12 +1098,18 @@ function applyAll() {
 function onNavigate() {
   clearTimeout(navigateTimer);
   volumeAppliedUrl = null;
+  qualityAppliedUrl = null;
+  expandAppliedUrl = null;
   navigateTimer = setTimeout(applyAll, 400);
   setTimeout(applyAll, 1200);
+  // Late quality verification - only does anything if the earlier passes
+  // never reached the menu (applyResolution self-guards per URL).
+  setTimeout(applyResolution, 4000);
 }
 
 function init() {
   console.info("[YPI] content.js build " + BUILD_TAG);
+  startPremiumSuppressor();
   loadSettings().then(() => {
     applyAll();
     if (settings.enabled && settings.muteHoverPreviews) startHoverMute();
@@ -1077,6 +1122,16 @@ function init() {
   document.addEventListener("wheel", handleShortsWheel, { capture: true, passive: false });
   document.addEventListener("wheel", handleVolumeWheel, { capture: true, passive: false });
   document.addEventListener("play", onVideoPlayCapture, true);
+  setInterval(() => {
+    if (!settings) return;
+    fixShortsLoop();
+    autoExpandPlayer();
+    applyCaptions();
+    startMiniplayerObserving();
+    applyHideCardsEndscreens();
+    applyNoTranslation();
+    if (settings.enabled && settings.blockPremiumPromos !== false) suppressPremiumDialogs(document.body);
+  }, 5000);
 }
 
 if (document.readyState === "loading") {
