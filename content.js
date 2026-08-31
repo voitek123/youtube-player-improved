@@ -4,7 +4,8 @@
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.2";
+// Build tag for console verification only - the public version stays 1.3.3.
+const BUILD_TAG = "ypi-1.3.3-r2";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -114,25 +115,32 @@ function isWatchPage() { return location.pathname.startsWith("/watch"); }
 function isEmbedPage() { return location.pathname.startsWith("/embed"); }
 function isAdShowing(player) { return !!player && player.classList.contains("ad-showing"); }
 
-function isOptionLocked(el) {
+// Truly unavailable options (for everyone, Premium member or not).
+function isOptionDisabled(el) {
   if (el.getAttribute("aria-disabled") === "true") return true;
   if (el.hasAttribute("disabled")) return true;
   const cls = (el.className || "").toString().toLowerCase();
-  if (/disabled|premium|locked/.test(cls)) return true;
-  if (el.querySelector('[class*="premium" i], [class*="locked" i], [class*="lock-icon" i]')) return true;
+  if (/disabled|locked/.test(cls)) return true;
+  if (el.querySelector('[class*="locked" i], [class*="lock-icon" i]')) return true;
   const style = el.getAttribute("style") || "";
   if (/pointer-events:\s*none/i.test(style)) return true;
   return false;
 }
 
+// Premium-branded rows (e.g. "1080p Premium"). "Premium" is an
+// untranslated brand term, so matching on it is language-safe.
+function isPremiumRow(o) {
+  return /premium/i.test(o.textContent || "") ||
+    !!o.querySelector('[class*="premium" i]');
+}
+
 // ---------- Premium upsell suppression ----------
-// YouTube can pop a Premium upsell dialog on its own (or as a reaction to
-// the quality menu being opened). When "Never show Premium promos" is on
-// (default), such dialogs are hidden in the same frame they are inserted
-// - MutationObserver callbacks run before the next paint, so the user
-// never sees them, not even a flash - and the node is removed shortly
-// after. No on-screen button is ever pressed. Scope is limited to
-// centered dialogs; page banners are left alone.
+// When "Skip Premium quality options" is CHECKED (default), Premium upsell
+// dialogs are hidden in the same frame they are inserted - MutationObserver
+// callbacks run before the next paint, so the user never sees them - and the
+// node is removed shortly after. No on-screen button is ever pressed. When
+// the toggle is UNCHECKED the suppressor stays off (the user prefers
+// Premium quality). Scope is limited to centered dialogs; banners untouched.
 
 const PREMIUM_DIALOG_SELECTOR = 'tp-yt-paper-dialog, [role="dialog"]';
 
@@ -157,24 +165,25 @@ function startPremiumSuppressor() {
   if (premiumSuppressObserver) return;
   premiumSuppressObserver = new MutationObserver((muts) => {
     if (!settings || !settings.enabled) return;
-    if (settings.blockPremiumPromos === false) return;
+    if (settings.blockPremiumPromos === false) return; // unchecked = leave dialogs alone
     for (const m of muts) m.addedNodes.forEach((n) => suppressPremiumDialogs(n));
   });
   premiumSuppressObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
 
 // ---------- 1. Preferred quality ----------
-// Drives the real Settings-menu UI only (the old setPlaybackQuality() JS
-// API is silently ignored for most viewers, and calling it with a tier
-// above the free maximum popped the Premium upsell, so it was removed).
-// The automation runs AT MOST ONCE per video URL - the old retry loop
-// re-clicked quality rows and forced repeated stream reloads, which made
-// videos visibly restart 2-3 times after launch. While the automation
-// runs, the menu UI is hidden with the ycc-quiet-menus class. With
-// "Never show Premium promos" on (default), Premium rows are skipped and
-// the closest lower free tier is picked; if no free tier exists at or
-// below the preferred resolution, nothing is clicked and the video stays
-// on Auto.
+// Drives the real Settings-menu UI only. The automation runs AT MOST ONCE
+// per video URL. While it runs, the menu UI is hidden with the
+// ycc-quiet-menus class.
+//
+// "Skip Premium quality options" toggle:
+//  - CHECKED (default): Premium rows are skipped, the closest lower FREE
+//    tier is picked (or the video stays on Auto if no free tier exists),
+//    and any Premium upsell dialog is hidden invisibly.
+//  - UNCHECKED: the addon PREFERS Premium quality rows - it will click
+//    "1080p Premium" when that is the closest tier to your preference,
+//    assuming you have a Premium membership. It never verifies the
+//    membership itself, and it leaves any upsell dialog alone.
 
 let resolutionInFlight = false;
 
@@ -236,12 +245,7 @@ async function applyResolution() {
       }, 1500);
 
       if (options) {
-        // "Premium" is an untranslated brand term, so matching on it is
-        // language-safe.
-        const isPremiumRow = (o) =>
-          /premium/i.test(o.textContent || "") ||
-          !!o.querySelector('[class*="premium" i], [class*="lock-icon" i]');
-        const selectable = options.filter((o) => !isOptionLocked(o) && !(blockPromos && isPremiumRow(o)));
+        const selectable = options.filter((o) => !isOptionDisabled(o) && !(blockPromos && isPremiumRow(o)));
         const resOf = (o) => { const m = (o.textContent || "").match(/(\d{2,4})p/); return m ? parseInt(m[1], 10) : 0; };
         let target = null;
         if (desired === "auto") {
@@ -574,6 +578,9 @@ function applyHideCardsEndscreens() {
 }
 
 // ---------- 10. Prevent auto-translation ----------
+// Site-wide: titles, descriptions and chapter names are restored on EVERY
+// YouTube subpage (home, search, feed, channels + their Shorts tabs,
+// playlists, the Shorts watch page, notifications, watch page, embeds).
 // Titles come primarily from the oEmbed endpoint: public, locale-free,
 // always the canonical original title. InnerTube (no hl/gl, no cookies)
 // supplies descriptions and chapters; the watch page (og:title) is the
@@ -734,7 +741,7 @@ function parseChaptersFromDescription(description) {
     let title;
     if (idx === 0 || /^[-–—•·▪▫‣⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
     else title = trimmed.substring(0, idx);
-    title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫‣⁃→>*\s]+$/, "").trim();
+    title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫⁃→>*\s]+$/, "").trim();
     if (title.length < 2) return;
     list.push({ title, startMillis: timeStringToSeconds(ts) * 1000 });
   });
@@ -833,14 +840,30 @@ async function applyEmbedTitle() {
   markOriginalApplied(linkEl, key);
 }
 
+// Every title element we know how to restore, across ALL subpages:
+// classic cards (#video-title), new view-model grids
+// (h3[title] > a > span[role="text"]), the Shorts watch page
+// (yt-shorts-video-title-view-model), old reel renderers, notifications.
 const FEED_TITLE_SELECTOR =
-  "#video-title, ytd-reel-video-renderer #title, ytd-notification-renderer #message yt-formatted-string, #notification-title";
+  "#video-title, " +
+  "h3[title] > a > span[role='text'], " +
+  "yt-shorts-video-title-view-model h1 span[role='text'], " +
+  "yt-shorts-video-title-view-model h2 span[role='text'], " +
+  "yt-shorts-video-title-view-model [class*='ShortsVideoTitle'] span, " +
+  "ytd-reel-video-renderer #title, " +
+  "ytd-notification-renderer #message yt-formatted-string, " +
+  "#notification-title";
 
 async function applyFeedTitle(titleEl) {
-  const card = titleEl.closest(
-    "ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, ytd-reel-item-renderer, ytd-reel-video-renderer, ytd-notification-renderer");
-  const link = (card && (card.querySelector("a#thumbnail, a#video-title-link, a#video-title") || card.querySelector('a[href^="/watch"], a[href^="/shorts/"]'))) || titleEl.closest("a");
-  const videoId = getVideoIdFromUrl(link && link.getAttribute("href"));
+  let link = titleEl.closest("a");
+  if (!link) {
+    const card = titleEl.closest(
+      "ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, ytd-reel-item-renderer, ytd-reel-video-renderer, ytd-notification-renderer");
+    link = card && card.querySelector('a[href^="/watch"], a[href^="/shorts/"]');
+  }
+  let videoId = getVideoIdFromUrl(link && link.getAttribute("href"));
+  // The Shorts watch-page title has no link of its own - use the URL.
+  if (!videoId && isShortsPage()) videoId = getVideoIdFromUrl(location.href);
   if (!videoId) return;
   const meta = await fetchOriginalVideoMeta(videoId);
   if (!settings.enabled || !settings.noTranslationEnabled || !meta || !meta.title) return;
@@ -849,9 +872,16 @@ async function applyFeedTitle(titleEl) {
     if (titleEl.hasAttribute("title")) titleEl.setAttribute("title", meta.title);
   }
 }
+
 function scanFeedTitles() {
   if (!settings.enabled || !settings.noTranslationEnabled) return;
   document.querySelectorAll(FEED_TITLE_SELECTOR).forEach((el) => applyFeedTitle(el));
+  // New-style Shorts cards (home Shorts shelf, channel Shorts tab): the
+  // title is the first span inside the lockup anchor (href = /shorts/ID).
+  document.querySelectorAll(".shortsLockupViewModelHostEndpoint").forEach((a) => {
+    const span = a.querySelector("span");
+    if (span) applyFeedTitle(span);
+  });
 }
 
 let searchSnippetStyleInjected = false;
@@ -881,28 +911,20 @@ function truncateDescription(description) {
   const short = description.split("\n").slice(0, 2).join("\n");
   return short.length > 100 ? short.substring(0, 100) + "..." : short;
 }
-function findSnippetEl(card) {
-  let el = card.querySelector(".metadata-snippet-text");
-  if (el) return el;
-  el = card.querySelector("#description-text");
-  if (el) return el;
-  const container = card.querySelector(".metadata-snippet-container, .metadata-snippet-container-one-line");
-  if (container) return container.querySelector("yt-formatted-string, yt-attributed-string") || container;
-  const candidates = card.querySelectorAll("yt-formatted-string, yt-attributed-string");
-  for (const c of candidates) {
-    if (c.id === "video-title") continue;
-    if (c.closest("#byline-container, #owner, ytd-metadata-row-container-renderer, ytd-rich-metadata-row-renderer, #menu, #actions, #title")) continue;
-    if ((c.textContent || "").trim().length >= 40) return c;
+
+// Site-wide description snippets: find every snippet element on whatever
+// subpage we're on, then locate the video it belongs to via the nearest
+// /watch or /shorts link (inside the card/lockup container).
+async function applyFeedDescription(descEl) {
+  const container = descEl.closest(".metadata-snippet-container, .metadata-snippet-container-one-line");
+  let link = descEl.closest('a[href*="/watch"], a[href*="/shorts/"]');
+  if (!link) {
+    const card = descEl.closest(
+      "ytd-video-renderer, ytd-rich-item-renderer, ytd-compact-video-renderer, ytd-reel-item-renderer, .shortsLockupViewModelHostEndpoint, ytd-lockup-view-model");
+    link = card && card.querySelector('a[href*="/watch"], a[href*="/shorts/"]');
   }
-  return null;
-}
-async function applyFeedDescription(descEl, card) {
-  card = card || descEl.closest("ytd-video-renderer");
-  if (!card) return;
-  const link = card.querySelector("a#thumbnail, a#video-title-link, a#video-title") || card.querySelector('a[href^="/watch"], a[href^="/shorts/"]') || descEl.closest("a");
   const videoId = getVideoIdFromUrl(link && link.getAttribute("href"));
   if (!videoId) return;
-  const container = descEl.closest(".metadata-snippet-container, .metadata-snippet-container-one-line");
   if (descEl.getAttribute("ycc-search") === videoId &&
       (!container || (container.getAttribute("ycc-search") === videoId && container.hasAttribute("data-original-description")))) return;
   const meta = await fetchOriginalVideoMeta(videoId);
@@ -930,10 +952,7 @@ async function applyFeedDescription(descEl, card) {
 }
 function scanFeedDescriptions() {
   if (!settings.enabled || !settings.noTranslationEnabled) return;
-  document.querySelectorAll("ytd-video-renderer").forEach((card) => {
-    const el = findSnippetEl(card);
-    if (el) applyFeedDescription(el, card);
-  });
+  document.querySelectorAll(".metadata-snippet-text, #description-text").forEach((el) => applyFeedDescription(el));
 }
 
 async function applyOriginalDescription() {
