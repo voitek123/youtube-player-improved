@@ -4,8 +4,7 @@
 (function () {
 "use strict";
 
-// Build tag for console verification only - the public version stays 1.3.3.
-const BUILD_TAG = "ypi-1.3.3-r2";
+const BUILD_TAG = "ypi-1.3.4";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -585,6 +584,14 @@ function applyHideCardsEndscreens() {
 // always the canonical original title. InnerTube (no hl/gl, no cookies)
 // supplies descriptions and chapters; the watch page (og:title) is the
 // last-resort fallback. Failed lookups are never cached.
+//
+// Title writes are RACE-SAFE and SELF-HEALING: YouTube constantly reuses
+// and rebuilds card DOM nodes while scrolling, so a write is only applied
+// if the node is still in the DOM and still shows exactly the text we saw
+// before the async fetch (i.e. it wasn't reused for another video). Each
+// processed node is marked with the video ID it was restored for; on later
+// scans a marked node whose text YouTube re-rendered back to a translated
+// (or emptied) value is repaired from the cached original.
 
 const FALLBACK_INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const FALLBACK_INNERTUBE_CLIENT_VERSION = "2.20240111.09.00";
@@ -811,11 +818,22 @@ async function applyMainTitle() {
   if (!videoId) return;
   const titleEl = document.querySelector(
     "ytd-watch-metadata h1.ytd-watch-metadata yt-formatted-string, ytd-watch-metadata yt-formatted-string.ytd-watch-metadata, #title h1 yt-formatted-string");
-  if (!titleEl || isOriginalAppliedFor(titleEl, videoId)) return;
+  if (!titleEl) return;
   const meta = await fetchOriginalVideoMeta(videoId);
   if (!settings.enabled || !settings.noTranslationEnabled) return;
   if (getVideoIdFromUrl(location.href) !== videoId) return;
   if (!meta || !meta.title) return;
+  if (isOriginalAppliedFor(titleEl, videoId)) {
+    // Self-heal: repair if YouTube re-rendered the title back to a
+    // translated (or emptied) value.
+    if (titleEl.textContent !== meta.title) {
+      const oldTitle = titleEl.textContent;
+      titleEl.textContent = meta.title;
+      if (titleEl.hasAttribute("title")) titleEl.setAttribute("title", meta.title);
+      if (oldTitle && document.title.includes(oldTitle)) document.title = document.title.replace(oldTitle, meta.title);
+    }
+    return;
+  }
   const oldTitle = titleEl.textContent;
   if (oldTitle !== meta.title) {
     titleEl.textContent = meta.title;
@@ -865,21 +883,40 @@ async function applyFeedTitle(titleEl) {
   // The Shorts watch-page title has no link of its own - use the URL.
   if (!videoId && isShortsPage()) videoId = getVideoIdFromUrl(location.href);
   if (!videoId) return;
+
+  // Already processed for this video: only repair if YouTube re-rendered
+  // the node back to a translated (or emptied) title. Cached, so cheap.
+  if (titleEl.dataset.yccTitleFor === videoId) {
+    const meta = await fetchOriginalVideoMeta(videoId);
+    if (meta && meta.title && titleEl.isConnected && titleEl.textContent !== meta.title) {
+      titleEl.textContent = meta.title;
+      if (titleEl.hasAttribute("title")) titleEl.setAttribute("title", meta.title);
+    }
+    return;
+  }
+
+  // Capture what the element shows right now; after the async fetch we
+  // only write if the node is still in the DOM and still shows exactly
+  // that text - i.e. YouTube hasn't reused or rebuilt it meanwhile.
+  const expected = titleEl.textContent;
   const meta = await fetchOriginalVideoMeta(videoId);
   if (!settings.enabled || !settings.noTranslationEnabled || !meta || !meta.title) return;
-  if (titleEl.textContent !== meta.title) {
+  if (!titleEl.isConnected) return;
+  if (titleEl.textContent !== expected) return;
+  if (expected !== meta.title) {
     titleEl.textContent = meta.title;
     if (titleEl.hasAttribute("title")) titleEl.setAttribute("title", meta.title);
   }
+  titleEl.dataset.yccTitleFor = videoId;
 }
 
 function scanFeedTitles() {
   if (!settings.enabled || !settings.noTranslationEnabled) return;
   document.querySelectorAll(FEED_TITLE_SELECTOR).forEach((el) => applyFeedTitle(el));
   // New-style Shorts cards (home Shorts shelf, channel Shorts tab): the
-  // title is the first span inside the lockup anchor (href = /shorts/ID).
+  // title is the first text span inside the lockup anchor (href=/shorts/ID).
   document.querySelectorAll(".shortsLockupViewModelHostEndpoint").forEach((a) => {
-    const span = a.querySelector("span");
+    const span = a.querySelector("span[role='text']") || a.querySelector("span");
     if (span) applyFeedTitle(span);
   });
 }
@@ -1065,6 +1102,19 @@ function applyNoTranslation() {
 }
 
 // ---------- 11. Prevent accidental Shorts scrolling ----------
+// Accumulates the scroll delta and only lets the event through to YouTube
+// once a deliberate threshold is crossed. Changing direction resets the
+// accumulator. The guard covers the whole Shorts stage; side areas
+// (comments, panels, guide, header, shelves) are exempted first and always
+// scroll normally.
+//
+// IMPORTANT (1.3.4): after a switch has been allowed, the cooldown window
+// no longer swallows wheel events - we simply stop evaluating thresholds
+// and let the reel scroll 100% natively. Swallowing events there could
+// leave YouTube's scroll-snap reel half-finished, which sometimes kept the
+// comments panel bound to the previous Short. Native post-switch scrolling
+// also means momentum may carry you one Short further - that's normal
+// YouTube behavior and keeps the page state (video + comments) in sync.
 let shortsWheelAccumulator = 0, shortsWheelResetTimer = null, shortsWheelCooldown = false;
 const SHORTS_WHEEL_THRESHOLD = 200;
 const SHORTS_WHEEL_COOLDOWN_MS = 800;
@@ -1080,7 +1130,7 @@ function handleShortsWheel(e) {
   if (!(e.target instanceof Element)) return;
   if (e.target.closest(SHORTS_WHEEL_EXEMPT_SELECTOR)) return;
   if (!e.target.closest(SHORTS_WHEEL_STAGE_SELECTOR)) return;
-  if (shortsWheelCooldown) { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); return; }
+  if (shortsWheelCooldown) return; // stay out of the way - native scrolling
   let delta = e.deltaY;
   if (e.deltaMode === 1) delta *= 30;
   if (e.deltaMode === 2) delta *= window.innerHeight;
