@@ -39,10 +39,19 @@
 }
 
 /* Hide the player's settings menus while the quality automation drives
-   them programmatically, so the panel never visibly pops open. */
+   them programmatically, so the panel never visibly pops open or flickers.
+   Covers both the classic class names and the newer role/panel-based
+   containers YouTube's current player uses. (content.js additionally hides
+   the exact menu root inline, so renamed containers are covered too.) */
 html.ycc-quiet-menus .ytp-settings-menu,
 html.ycc-quiet-menus .ytp-panel-menu,
 html.ycc-quiet-menus .ytp-panel,
-html.ycc-quiet-menus .ytp-settings-button-menu {
+html.ycc-quiet-menus .ytp-settings-button-menu,
+html.ycc-quiet-menus .ytp-menu,
+html.ycc-quiet-menus [role="menu"],
+html.ycc-quiet-menus .html5-video-player .ytp-menu,
+html.ycc-quiet-menus .html5-video-player [role="menu"],
+html.ycc-quiet-menus #movie_player .ytp-menu,
+html.ycc-quiet-menus #movie_player [role="menu"] {
   display: none !important;
 }
