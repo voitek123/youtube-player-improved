@@ -4,7 +4,7 @@
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.5";
+const BUILD_TAG = "ypi-1.3.6";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -33,6 +33,7 @@ let hoverMuteInterval = null;
 let qualityAppliedUrl = null;
 let qualityRetryTimer = null;
 let expandAppliedUrl = null;
+let lastCaptionsToggle = 0;
 
 // ---------- Settings ----------
 
@@ -56,7 +57,7 @@ browser.storage.onChanged.addListener((changes, area) => {
   }
   if (changedKeys.some((k) => KEY_GROUPS.shorts.includes(k))) { fixShortsLoop(); startShortsSweep(); }
   if (changedKeys.some((k) => KEY_GROUPS.expand.includes(k))) { expandAppliedUrl = null; autoExpandPlayer(); }
-  if (changedKeys.some((k) => KEY_GROUPS.captions.includes(k))) applyCaptions();
+  if (changedKeys.some((k) => KEY_GROUPS.captions.includes(k))) { lastCaptionsToggle = 0; applyCaptions(); }
   if (changedKeys.some((k) => KEY_GROUPS.miniplayer.includes(k))) {
     const structuralChange = changedKeys.includes("enabled") || changedKeys.includes("miniplayerEnabled");
     if (structuralChange) startMiniplayerObserving();
@@ -114,19 +115,16 @@ function isWatchPage() { return location.pathname.startsWith("/watch"); }
 function isEmbedPage() { return location.pathname.startsWith("/embed"); }
 function isAdShowing(player) { return !!player && player.classList.contains("ad-showing"); }
 
-// True once the player actually has video data. Touching the settings
-// menu or the captions state while the player is still initializing can
-// stall the initial stream request (black 0:00 player) and make the
-// control bar re-render/flicker - observed with Firefox 155.
+// True ONLY when the <video> element actually has media data. Player
+// states like "buffering"/"cued" are NOT trusted: during an ad-blocker
+// stall the player reports them while the video element is still empty,
+// and touching the menu/captions in that window causes flicker or can
+// extend the stall. Any ad state also counts as "not ready".
 function isPlayerReady() {
-  const video = getVideo();
-  if (video && video.readyState >= 1) return true;
   const player = getPlayer();
-  if (player && typeof player.getPlayerState === "function") {
-    const st = player.getPlayerState();
-    if (st === 1 || st === 2 || st === 3 || st === 5) return true;
-  }
-  return false;
+  if (player && (player.classList.contains("ad-showing") || player.classList.contains("ad-interrupting"))) return false;
+  const video = getVideo();
+  return !!(video && video.readyState >= 1);
 }
 
 // Truly unavailable options (for everyone, Premium member or not).
@@ -187,11 +185,12 @@ function startPremiumSuppressor() {
 
 // ---------- 1. Preferred quality ----------
 // Drives the real Settings-menu UI only. The automation runs AT MOST ONCE
-// per video URL, and ONLY after the player has real video data (isPlayerReady)
-// so it can never interrupt the initial stream load. While it runs, the menu
-// UI is hidden twice over: the ycc-quiet-menus CSS class on <html>, plus an
-// inline display:none on the exact menu container(s) being driven - which
-// works even when YouTube renames its menu classes.
+// per video URL, and ONLY after the player has real video data, so it can
+// never interrupt the initial stream load or an ad-blocker stall. It also
+// re-checks from the 5s heartbeat, so after a long stall the preferred
+// quality still applies once the real video starts. While it runs, the
+// menu is hidden twice over: the ycc-quiet-menus CSS class on <html>, plus
+// an inline display:none on the exact menu container(s) being driven.
 //
 // "Skip Premium quality options" toggle:
 //  - CHECKED (default): Premium rows are skipped, the closest lower FREE
@@ -212,7 +211,7 @@ async function applyResolution() {
   const player = getPlayer();
   if (!player || isAdShowing(player)) return;
 
-  // Don't touch the menu while the player is still initializing.
+  // Don't touch the menu while the player is still initializing/stalled.
   if (!isPlayerReady()) {
     if (!qualityRetryTimer) {
       let tries = 0;
@@ -263,7 +262,7 @@ async function applyResolution() {
       const items = Array.from(player.querySelectorAll(ITEM_SELECTOR));
       return items.length ? items : null;
     }, 1500);
-    if (!menuItems) return; // player not ready yet - the 4s pass may retry
+    if (!menuItems) return; // player not ready yet - heartbeat may retry
     hideRoot(menuItems[0]);
 
     const qualityItem = menuItems.find((mi) => {
@@ -460,10 +459,10 @@ function autoExpandPlayer() {
 }
 
 // ---------- 7. Captions / subtitles control ----------
-// Uses EITHER the player API OR the visible CC button, never both in the
-// same pass (doing both could double-toggle and make the control bar
-// flicker). Only acts once the player is ready, so it can't interrupt the
-// initial stream load.
+// Waits for a ready (non-ad) player, then uses EITHER the player API OR the
+// visible CC button, never both in the same pass. A cooldown of 8 seconds
+// between adjustments makes oscillation (and the control-bar flicker it
+// causes) impossible, even while a stalled player keeps resetting state.
 function applyCaptions() {
   if (!settings.enabled || !settings.captionsControlEnabled) return;
   const player = getPlayer();
@@ -473,7 +472,13 @@ function applyCaptions() {
   if (typeof player.isSubtitlesOn === "function") {
     try {
       const isOn = player.isSubtitlesOn();
-      if (isOn !== desiredOn && typeof player.toggleSubtitlesOn === "function") player.toggleSubtitlesOn(desiredOn);
+      if (isOn !== desiredOn) {
+        if (Date.now() - lastCaptionsToggle < 8000) return;
+        if (typeof player.toggleSubtitlesOn === "function") {
+          player.toggleSubtitlesOn(desiredOn);
+          lastCaptionsToggle = Date.now();
+        }
+      }
     } catch (e) { /* ignore */ }
     return; // API path only
   }
@@ -481,7 +486,11 @@ function applyCaptions() {
   const btn = document.querySelector(".ytp-subtitles-button");
   if (btn) {
     const pressed = btn.getAttribute("aria-pressed") === "true";
-    if (pressed !== desiredOn) btn.click();
+    if (pressed !== desiredOn) {
+      if (Date.now() - lastCaptionsToggle < 8000) return;
+      btn.click();
+      lastCaptionsToggle = Date.now();
+    }
   }
 }
 
@@ -627,10 +636,13 @@ function applyHideCardsEndscreens() {
 // cookies) supplies descriptions and chapters; the watch page (og:title) is
 // the last-resort fallback. Failed lookups are never cached.
 //
-// Title writes are RACE-SAFE and SELF-HEALING: a write is only applied if
-// the node is still in the DOM and still shows exactly the text we saw
-// before the async fetch; processed nodes are marked with the video ID and
-// repaired on later scans if YouTube re-renders them.
+// Title writes are RACE-SAFE and SELF-HEALING. The watch-page title is
+// restored through its HEADING CONTAINER (h1): on every scan, if the
+// container's visible text is empty or still translated, the original is
+// written into whichever child element actually renders - so it works even
+// when YouTube displays the title through a different or freshly replaced
+// node. Feed/Shorts title nodes are healed too, including unmarked empty
+// ones.
 
 const FALLBACK_INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const FALLBACK_INNERTUBE_CLIENT_VERSION = "2.20240111.09.00";
@@ -785,9 +797,9 @@ function parseChaptersFromDescription(description) {
     if (!before && !after) return;
     const ts = m[1], idx = m.index;
     let title;
-    if (idx === 0 || /^[-–—•·▪▫‣→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
+    if (idx === 0 || /^[-–—•·▪▫‣⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
     else title = trimmed.substring(0, idx);
-    title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫⁃→>*\s]+$/, "").trim();
+    title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫→>*\s]+$/, "").trim();
     if (title.length < 2) return;
     list.push({ title, startMillis: timeStringToSeconds(ts) * 1000 });
   });
@@ -851,35 +863,31 @@ function fetchOriginalVideoMeta(videoId) {
 function markOriginalApplied(el, key) { el.dataset.yccOrigKey = key; }
 function isOriginalAppliedFor(el, key) { return el.dataset.yccOrigKey === key; }
 
+// Watch-page title, restored/healed through the heading CONTAINER so it
+// works no matter which child element YouTube actually renders the visible
+// title through (YouTube swaps/rebuilds these nodes between layouts).
 async function applyMainTitle() {
   if (!isWatchPage()) return;
   const videoId = getVideoIdFromUrl(location.href);
   if (!videoId) return;
-  const titleEl = document.querySelector(
-    "ytd-watch-metadata h1.ytd-watch-metadata yt-formatted-string, ytd-watch-metadata yt-formatted-string.ytd-watch-metadata, #title h1 yt-formatted-string");
-  if (!titleEl) return;
   const meta = await fetchOriginalVideoMeta(videoId);
   if (!settings.enabled || !settings.noTranslationEnabled) return;
   if (getVideoIdFromUrl(location.href) !== videoId) return;
   if (!meta || !meta.title) return;
-  if (isOriginalAppliedFor(titleEl, videoId)) {
-    // Self-heal: repair if YouTube re-rendered the title back to a
-    // translated (or emptied) value.
-    if (titleEl.textContent !== meta.title) {
-      const oldTitle = titleEl.textContent;
-      titleEl.textContent = meta.title;
-      if (titleEl.hasAttribute("title")) titleEl.setAttribute("title", meta.title);
-      if (oldTitle && document.title.includes(oldTitle)) document.title = document.title.replace(oldTitle, meta.title);
-    }
-    return;
-  }
-  const oldTitle = titleEl.textContent;
-  if (oldTitle !== meta.title) {
-    titleEl.textContent = meta.title;
-    if (titleEl.hasAttribute("title")) titleEl.setAttribute("title", meta.title);
+
+  document.querySelectorAll("ytd-watch-metadata h1, #title h1").forEach((h1) => {
+    const visibleText = (h1.textContent || "").trim();
+    if (visibleText === meta.title) return; // already correct
+    // Prefer the inner formatted-string node YouTube renders; fall back
+    // to the h1 itself (plain text is visually fine).
+    const child = h1.querySelector("yt-formatted-string, yt-dynamic-sizing-formatted-string");
+    const target = child || h1;
+    const oldTitle = (target.textContent || "").trim();
+    target.textContent = meta.title;
+    if (target.hasAttribute("title")) target.setAttribute("title", meta.title);
     if (oldTitle && document.title.includes(oldTitle)) document.title = document.title.replace(oldTitle, meta.title);
-  }
-  markOriginalApplied(titleEl, videoId);
+    markOriginalApplied(target, videoId);
+  });
 }
 
 async function applyEmbedTitle() {
@@ -931,9 +939,10 @@ async function applyFeedTitle(titleEl) {
     return;
   }
 
-  // Capture what the element shows right now; after the async fetch we
-  // only write if the node is still in the DOM and still shows exactly
-  // that text - i.e. YouTube hasn't reused or rebuilt it meanwhile.
+  // Capture what the element shows right now (possibly EMPTY - we heal
+  // unmarked empty nodes too); after the async fetch we only write if the
+  // node is still in the DOM and still shows exactly that text - i.e.
+  // YouTube hasn't reused or rebuilt it meanwhile.
   const expected = titleEl.textContent;
   const meta = await fetchOriginalVideoMeta(videoId);
   if (!settings.enabled || !settings.noTranslationEnabled || !meta || !meta.title) return;
@@ -1106,6 +1115,7 @@ let translationObserver = null, translationScanTimer = null;
 function scheduleTranslationScan() {
   clearTimeout(translationScanTimer);
   translationScanTimer = setTimeout(() => {
+    applyMainTitle();
     scanFeedTitles();
     scanFeedDescriptions();
     applyOriginalChapters();
@@ -1218,6 +1228,7 @@ function init() {
   document.addEventListener("play", onVideoPlayCapture, true);
   setInterval(() => {
     if (!settings) return;
+    applyResolution(); // also retries quality after long ad-blocker stalls
     fixShortsLoop();
     autoExpandPlayer();
     applyCaptions();
