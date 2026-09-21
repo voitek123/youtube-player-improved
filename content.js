@@ -4,7 +4,7 @@
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.6";
+const BUILD_TAG = "ypi-1.3.7";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -30,10 +30,16 @@ let settings = {};
 let navigateTimer = null;
 let shortsSweepInterval = null;
 let hoverMuteInterval = null;
-let qualityAppliedUrl = null;
+let qualityAppliedId = null;
+let qualityAttempts = 0;
 let qualityRetryTimer = null;
 let expandAppliedUrl = null;
 let lastCaptionsToggle = 0;
+let volumeWindowUntil = 0;
+const shortsVolumeWindows = new WeakMap();
+let lastNavVideoId = null;
+let titleRescanTimer = null;
+let titleRescanCount = 0;
 
 // ---------- Settings ----------
 
@@ -48,10 +54,11 @@ browser.storage.onChanged.addListener((changes, area) => {
   for (const key of changedKeys) settings[key] = changes[key].newValue;
 
   if (changedKeys.some((k) => KEY_GROUPS.resolution.includes(k))) {
-    qualityAppliedUrl = null; // a settings change may re-apply quality
+    qualityAppliedId = null; // a settings change may re-apply quality
+    qualityAttempts = 0;
     applyResolution();
   }
-  if (changedKeys.some((k) => KEY_GROUPS.volume.includes(k))) applyVolumeNow();
+  if (changedKeys.some((k) => KEY_GROUPS.volume.includes(k))) { volumeWindowUntil = Date.now() + 2500; applyVolumeNow(); }
   if (changedKeys.some((k) => KEY_GROUPS.hover.includes(k))) {
     if (settings.enabled && settings.muteHoverPreviews) startHoverMute(); else stopHoverMute();
   }
@@ -147,13 +154,6 @@ function isPremiumRow(o) {
 }
 
 // ---------- Premium upsell suppression ----------
-// When "Skip Premium quality options" is CHECKED (default), Premium upsell
-// dialogs are hidden in the same frame they are inserted - MutationObserver
-// callbacks run before the next paint, so the user never sees them - and the
-// node is removed shortly after. No on-screen button is ever pressed. When
-// the toggle is UNCHECKED the suppressor stays off (the user prefers
-// Premium quality). Scope is limited to centered dialogs; banners untouched.
-
 const PREMIUM_DIALOG_SELECTOR = 'tp-yt-paper-dialog, [role="dialog"]';
 
 function suppressPremiumDialogs(root) {
@@ -177,37 +177,46 @@ function startPremiumSuppressor() {
   if (premiumSuppressObserver) return;
   premiumSuppressObserver = new MutationObserver((muts) => {
     if (!settings || !settings.enabled) return;
-    if (settings.blockPremiumPromos === false) return; // unchecked = leave dialogs alone
+    if (settings.blockPremiumPromos === false) return;
     for (const m of muts) m.addedNodes.forEach((n) => suppressPremiumDialogs(n));
   });
   premiumSuppressObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
 
 // ---------- 1. Preferred quality ----------
-// Drives the real Settings-menu UI only. The automation runs AT MOST ONCE
-// per video URL, and ONLY after the player has real video data, so it can
-// never interrupt the initial stream load or an ad-blocker stall. It also
-// re-checks from the 5s heartbeat, so after a long stall the preferred
-// quality still applies once the real video starts. While it runs, the
-// menu is hidden twice over: the ycc-quiet-menus CSS class on <html>, plus
-// an inline display:none on the exact menu container(s) being driven.
+// Drives the real Settings-menu UI only. Runs AT MOST 2 times per VIDEO ID
+// (YouTube can fire several navigation events per load; keying by ID stops
+// duplicate runs that re-clicked quality rows and reloaded the stream).
+// Only acts once the player has real video data. While it runs, the menu
+// is hidden twice over: the ycc-quiet-menus CSS class on <html> (applied
+// preemptively to any existing menu container) plus an inline display:none
+// on the exact menu root(s) being driven. Menus are closed by detecting
+// visible menu containers directly, not only via aria-expanded.
 //
 // "Skip Premium quality options" toggle:
 //  - CHECKED (default): Premium rows are skipped, the closest lower FREE
 //    tier is picked (or the video stays on Auto if no free tier exists),
 //    and any Premium upsell dialog is hidden invisibly.
-//  - UNCHECKED: the addon PREFERS Premium quality rows - it will click
-//    "1080p Premium" when that is the closest tier to your preference,
-//    assuming you have a Premium membership. It never verifies the
-//    membership itself, and it leaves any upsell dialog alone.
+//  - UNCHECKED: the addon PREFERS Premium quality rows, assuming you have
+//    a Premium membership. It never verifies it, and leaves dialogs alone.
 
 let resolutionInFlight = false;
+const MENU_ROOT_SELECTOR = '[role="menu"], .ytp-menu, .ytp-settings-menu, .ytp-panel, .ytp-panel-menu';
+
+function menuVisible(player, settingsBtn) {
+  if (settingsBtn.getAttribute("aria-expanded") === "true") return true;
+  const m = player.querySelector(MENU_ROOT_SELECTOR);
+  return !!(m && m.offsetParent !== null);
+}
 
 async function applyResolution() {
   if (!settings.enabled || !settings.resolutionEnabled) return;
   if (resolutionInFlight) return;
   if (isShortsPage()) return;
-  if (qualityAppliedUrl === location.href) return; // already handled this video
+  const currentId = getVideoIdFromUrl(location.href);
+  if (!currentId) return;
+  if (qualityAppliedId === currentId) return; // already handled this video
+  if (qualityAttempts >= 2) return; // hard cap per video
   const player = getPlayer();
   if (!player || isAdShowing(player)) return;
 
@@ -232,7 +241,15 @@ async function applyResolution() {
 
   const settingsBtn = player.querySelector(".ytp-settings-button");
   if (!settingsBtn) return;
-  if (settingsBtn.getAttribute("aria-expanded") === "true") return;
+
+  // A leftover open menu from an earlier run: close it and bail.
+  if (menuVisible(player, settingsBtn)) {
+    for (let i = 0; i < 3 && menuVisible(player, settingsBtn); i++) {
+      settingsBtn.click();
+      await wait(120);
+    }
+    return;
+  }
 
   if (!mpFloating) {
     const rect = player.getBoundingClientRect();
@@ -244,25 +261,28 @@ async function applyResolution() {
     '.ytp-settings-menu [role="menuitemradio"], .ytp-settings-menu [role="menuitem"], .ytp-settings-menu .ytp-menuitem, .ytp-panel-menu [role="menuitemradio"], .ytp-panel-menu [role="menuitem"], .ytp-panel-menu .ytp-menuitem, [role="menu"] [role="menuitemradio"], [role="menu"] [role="menuitem"], .ytp-menu [role="menuitemradio"], .ytp-menu .ytp-menuitem';
   const RES_PATTERN = /\d{2,4}p(\d{1,3})?/i;
 
-  // Menu containers we hide inline (class-name independent).
   const hiddenRoots = [];
   function hideRoot(el) {
-    const root = el && el.closest('[role="menu"], .ytp-menu, .ytp-settings-menu, .ytp-panel, .ytp-panel-menu');
+    if (!el) return;
+    const root = (el.matches && el.matches(MENU_ROOT_SELECTOR)) ? el : el.closest(MENU_ROOT_SELECTOR);
     if (root && !hiddenRoots.includes(root)) {
       root.style.setProperty("display", "none", "important");
       hiddenRoots.push(root);
     }
   }
 
+  qualityAttempts++;
   resolutionInFlight = true;
   document.documentElement.classList.add("ycc-quiet-menus");
+  // Preemptively hide any menu containers that already exist.
+  player.querySelectorAll(MENU_ROOT_SELECTOR).forEach(hideRoot);
   try {
     settingsBtn.click();
     const menuItems = await waitFor(() => {
       const items = Array.from(player.querySelectorAll(ITEM_SELECTOR));
       return items.length ? items : null;
     }, 1500);
-    if (!menuItems) return; // player not ready yet - heartbeat may retry
+    if (!menuItems) return;
     hideRoot(menuItems[0]);
 
     const qualityItem = menuItems.find((mi) => {
@@ -271,9 +291,8 @@ async function applyResolution() {
     });
     if (!qualityItem) return;
 
-    // We've done our job for this video either way - never re-run the
-    // automation (that's what caused the repeated stream reloads).
-    qualityAppliedUrl = location.href;
+    // Done for this video either way - never re-run the automation.
+    qualityAppliedId = currentId;
 
     const desiredLabel = QUALITY_LABELS[desired] || "1080p";
     const currentLabelText = (qualityItem.querySelector(".ytp-menuitem-content")?.textContent || qualityItem.textContent || "").trim();
@@ -308,9 +327,7 @@ async function applyResolution() {
   } catch (e) { /* ignore - finally still closes the menu */ }
   finally {
     // Close the menu while it is still hidden, then un-hide everything.
-    for (let i = 0; i < 3; i++) {
-      const open = settingsBtn.getAttribute("aria-expanded") === "true";
-      if (!open) break;
+    for (let i = 0; i < 3 && menuVisible(player, settingsBtn); i++) {
       settingsBtn.click();
       await wait(120);
     }
@@ -322,6 +339,10 @@ async function applyResolution() {
 }
 
 // ---------- 2. Default volume level (applied at video start) ----------
+// Applied once per video, PLUS a short protection window (~2.5s) during
+// which we re-assert the addon volume if YouTube changes it - this beats
+// YouTube restoring its own saved volume right after our initial set.
+// After the window closes, the volume belongs entirely to the user.
 let volumeAppliedUrl = null;
 const volumeAppliedVideos = new WeakSet();
 
@@ -347,14 +368,34 @@ function onVideoPlayCapture(e) {
   const v = e.target;
   if (!(v instanceof HTMLVideoElement)) return;
   if (isShortsPage()) {
-    if (volumeAppliedVideos.has(v)) return;
-    volumeAppliedVideos.add(v);
-    setVolumeOnce(v);
+    if (!volumeAppliedVideos.has(v)) {
+      volumeAppliedVideos.add(v);
+      shortsVolumeWindows.set(v, Date.now() + 2500);
+      setVolumeOnce(v);
+    }
     return;
   }
   if (!v.classList.contains("html5-main-video")) return;
   if (volumeAppliedUrl === location.href) return;
   volumeAppliedUrl = location.href;
+  volumeWindowUntil = Date.now() + 2500;
+  setVolumeOnce(v);
+}
+
+// During the protection window, counter YouTube's own volume restores.
+function onVolumeChangeCapture(e) {
+  if (!settings || !settings.enabled || !settings.fixedVolumeEnabled) return;
+  const v = e.target;
+  if (!(v instanceof HTMLVideoElement)) return;
+  const now = Date.now();
+  if (isShortsPage()) {
+    const until = shortsVolumeWindows.get(v);
+    if (!until || now >= until) return;
+    setVolumeOnce(v);
+    return;
+  }
+  if (!v.classList.contains("html5-main-video")) return;
+  if (!volumeWindowUntil || now >= volumeWindowUntil) return;
   setVolumeOnce(v);
 }
 
@@ -459,10 +500,6 @@ function autoExpandPlayer() {
 }
 
 // ---------- 7. Captions / subtitles control ----------
-// Waits for a ready (non-ad) player, then uses EITHER the player API OR the
-// visible CC button, never both in the same pass. A cooldown of 8 seconds
-// between adjustments makes oscillation (and the control-bar flicker it
-// causes) impossible, even while a stalled player keeps resetting state.
 function applyCaptions() {
   if (!settings.enabled || !settings.captionsControlEnabled) return;
   const player = getPlayer();
@@ -482,7 +519,6 @@ function applyCaptions() {
     } catch (e) { /* ignore */ }
     return; // API path only
   }
-  // Fallback (no API): the visible CC button.
   const btn = document.querySelector(".ytp-subtitles-button");
   if (btn) {
     const pressed = btn.getAttribute("aria-pressed") === "true";
@@ -631,18 +667,15 @@ function applyHideCardsEndscreens() {
 
 // ---------- 10. Prevent auto-translation ----------
 // Site-wide: titles, descriptions and chapter names are restored on EVERY
-// YouTube subpage. Titles come primarily from the oEmbed endpoint: public,
-// locale-free, always the canonical original title. InnerTube (no hl/gl, no
-// cookies) supplies descriptions and chapters; the watch page (og:title) is
-// the last-resort fallback. Failed lookups are never cached.
+// YouTube subpage. Titles come primarily from the oEmbed endpoint (public,
+// locale-free, canonical). InnerTube supplies descriptions and chapters;
+// the watch page (og:title) is the last-resort fallback. Failed lookups
+// are never cached.
 //
-// Title writes are RACE-SAFE and SELF-HEALING. The watch-page title is
-// restored through its HEADING CONTAINER (h1): on every scan, if the
-// container's visible text is empty or still translated, the original is
-// written into whichever child element actually renders - so it works even
-// when YouTube displays the title through a different or freshly replaced
-// node. Feed/Shorts title nodes are healed too, including unmarked empty
-// ones.
+// Title restoration is container-based, self-healing, and now THROTTLED:
+// each scan processes at most a small budget of fresh (uncached) titles so
+// YouTube never rate-limits us; anything left over is retried by up to
+// three targeted re-scans two seconds apart.
 
 const FALLBACK_INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const FALLBACK_INNERTUBE_CLIENT_VERSION = "2.20240111.09.00";
@@ -681,8 +714,6 @@ function fetchWithTimeout(url, options, timeoutMs) {
   return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
-// Static HTML-entity decoder (no DOM, no innerHTML) - keeps Mozilla's
-// linter happy while still cleaning og:title values.
 function decodeEntities(s) {
   return String(s)
     .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCodePoint(parseInt(h, 16)))
@@ -797,9 +828,9 @@ function parseChaptersFromDescription(description) {
     if (!before && !after) return;
     const ts = m[1], idx = m.index;
     let title;
-    if (idx === 0 || /^[-–—•·▪▫‣⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
+    if (idx === 0 || /^[-–—•·▪▫‣→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
     else title = trimmed.substring(0, idx);
-    title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫→>*\s]+$/, "").trim();
+    title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫⁃→>*\s]+$/, "").trim();
     if (title.length < 2) return;
     list.push({ title, startMillis: timeStringToSeconds(ts) * 1000 });
   });
@@ -816,7 +847,6 @@ function fetchOriginalVideoMeta(videoId) {
     const { apiKey, clientVersion } = extractInnertubeConfig();
     let title = null, description = null, chapters = null;
 
-    // 1) Title from oEmbed - locale-free canonical original.
     try {
       const res = await fetchWithTimeout(
         "https://www.youtube.com/oembed?url=" + encodeURIComponent("https://www.youtube.com/watch?v=" + videoId) + "&format=json",
@@ -824,7 +854,6 @@ function fetchOriginalVideoMeta(videoId) {
       if (res.ok) title = (await res.json()).title || null;
     } catch (e) { /* fall through */ }
 
-    // 2) Description + chapters (+ title fallback) from InnerTube.
     try {
       const res = await fetchWithTimeout(
         "https://www.youtube.com/youtubei/v1/player?key=" + encodeURIComponent(apiKey),
@@ -847,7 +876,6 @@ function fetchOriginalVideoMeta(videoId) {
       }
     } catch (e) { /* fall through */ }
 
-    // 3) Watch-page fallbacks.
     if (!title) title = await fetchTitleFromWatchPage(videoId);
     if (!description) description = await fetchDescriptionFallback(videoId);
     if (!chapters) chapters = parseChaptersFromDescription(description);
@@ -863,9 +891,7 @@ function fetchOriginalVideoMeta(videoId) {
 function markOriginalApplied(el, key) { el.dataset.yccOrigKey = key; }
 function isOriginalAppliedFor(el, key) { return el.dataset.yccOrigKey === key; }
 
-// Watch-page title, restored/healed through the heading CONTAINER so it
-// works no matter which child element YouTube actually renders the visible
-// title through (YouTube swaps/rebuilds these nodes between layouts).
+// Watch-page title, restored/healed through the heading CONTAINER.
 async function applyMainTitle() {
   if (!isWatchPage()) return;
   const videoId = getVideoIdFromUrl(location.href);
@@ -877,9 +903,7 @@ async function applyMainTitle() {
 
   document.querySelectorAll("ytd-watch-metadata h1, #title h1").forEach((h1) => {
     const visibleText = (h1.textContent || "").trim();
-    if (visibleText === meta.title) return; // already correct
-    // Prefer the inner formatted-string node YouTube renders; fall back
-    // to the h1 itself (plain text is visually fine).
+    if (visibleText === meta.title) return;
     const child = h1.querySelector("yt-formatted-string, yt-dynamic-sizing-formatted-string");
     const target = child || h1;
     const oldTitle = (target.textContent || "").trim();
@@ -905,10 +929,17 @@ async function applyEmbedTitle() {
   markOriginalApplied(linkEl, key);
 }
 
-// Every title element we know how to restore, across ALL subpages.
+// Every title element we know how to restore, across ALL subpages -
+// including the newest view-model / lockup layouts used by channel shelves
+// and "For you" rows.
 const FEED_TITLE_SELECTOR =
   "#video-title, " +
   "h3[title] > a > span[role='text'], " +
+  "h3 > a > span[role='text'], " +
+  "yt-lockup-view-model h3 span[role='text'], " +
+  "yt-lockup-view-model [slot='title'] span, " +
+  "ytd-rich-grid-media #video-title, " +
+  "ytd-rich-grid-media h3 a span, " +
   "yt-shorts-video-title-view-model h1 span[role='text'], " +
   "yt-shorts-video-title-view-model h2 span[role='text'], " +
   "yt-shorts-video-title-view-model [class*='ShortsVideoTitle'] span, " +
@@ -916,16 +947,22 @@ const FEED_TITLE_SELECTOR =
   "ytd-notification-renderer #message yt-formatted-string, " +
   "#notification-title";
 
-async function applyFeedTitle(titleEl) {
+const CARD_SELECTOR =
+  "ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, ytd-reel-item-renderer, ytd-reel-video-renderer, ytd-notification-renderer, yt-lockup-view-model, ytd-rich-grid-media";
+
+function getTitleVideoId(titleEl) {
   let link = titleEl.closest("a");
   if (!link) {
-    const card = titleEl.closest(
-      "ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, ytd-reel-item-renderer, ytd-reel-video-renderer, ytd-notification-renderer");
+    const card = titleEl.closest(CARD_SELECTOR);
     link = card && card.querySelector('a[href^="/watch"], a[href^="/shorts/"]');
   }
   let videoId = getVideoIdFromUrl(link && link.getAttribute("href"));
-  // The Shorts watch-page title has no link of its own - use the URL.
   if (!videoId && isShortsPage()) videoId = getVideoIdFromUrl(location.href);
+  return videoId || null;
+}
+
+async function applyFeedTitle(titleEl) {
+  const videoId = getTitleVideoId(titleEl);
   if (!videoId) return;
 
   // Already processed for this video: only repair if YouTube re-rendered
@@ -939,10 +976,6 @@ async function applyFeedTitle(titleEl) {
     return;
   }
 
-  // Capture what the element shows right now (possibly EMPTY - we heal
-  // unmarked empty nodes too); after the async fetch we only write if the
-  // node is still in the DOM and still shows exactly that text - i.e.
-  // YouTube hasn't reused or rebuilt it meanwhile.
   const expected = titleEl.textContent;
   const meta = await fetchOriginalVideoMeta(videoId);
   if (!settings.enabled || !settings.noTranslationEnabled || !meta || !meta.title) return;
@@ -955,15 +988,39 @@ async function applyFeedTitle(titleEl) {
   titleEl.dataset.yccTitleFor = videoId;
 }
 
+function scheduleTitleRescan() {
+  if (titleRescanTimer || titleRescanCount >= 3) return;
+  titleRescanTimer = setTimeout(() => {
+    titleRescanTimer = null;
+    titleRescanCount++;
+    scanFeedTitles();
+  }, 2000);
+}
+
 function scanFeedTitles() {
   if (!settings.enabled || !settings.noTranslationEnabled) return;
-  document.querySelectorAll(FEED_TITLE_SELECTOR).forEach((el) => applyFeedTitle(el));
-  // New-style Shorts cards (home Shorts shelf, channel Shorts tab): the
-  // title is the first text span inside the lockup anchor (href=/shorts/ID).
+  const nodes = [];
+  document.querySelectorAll(FEED_TITLE_SELECTOR).forEach((el) => nodes.push(el));
   document.querySelectorAll(".shortsLockupViewModelHostEndpoint").forEach((a) => {
     const span = a.querySelector("span[role='text']") || a.querySelector("span");
-    if (span) applyFeedTitle(span);
+    if (span) nodes.push(span);
   });
+  // Throttle fresh fetches so YouTube never rate-limits us; cached or
+  // already-marked nodes are always processed immediately.
+  let budget = 6;
+  let deferred = false;
+  for (const el of nodes) {
+    const id = getTitleVideoId(el);
+    if (!id) continue;
+    const cheap = el.dataset.yccTitleFor === id || videoMetaCache.has(id);
+    if (cheap || budget > 0) {
+      if (!cheap) budget--;
+      applyFeedTitle(el);
+    } else {
+      deferred = true;
+    }
+  }
+  if (deferred) scheduleTitleRescan();
 }
 
 let searchSnippetStyleInjected = false;
@@ -994,13 +1051,11 @@ function truncateDescription(description) {
   return short.length > 100 ? short.substring(0, 100) + "..." : short;
 }
 
-// Site-wide description snippets.
 async function applyFeedDescription(descEl) {
   const container = descEl.closest(".metadata-snippet-container, .metadata-snippet-container-one-line");
   let link = descEl.closest('a[href*="/watch"], a[href*="/shorts/"]');
   if (!link) {
-    const card = descEl.closest(
-      "ytd-video-renderer, ytd-rich-item-renderer, ytd-compact-video-renderer, ytd-reel-item-renderer, .shortsLockupViewModelHostEndpoint, ytd-lockup-view-model");
+    const card = descEl.closest(CARD_SELECTOR);
     link = card && card.querySelector('a[href*="/watch"], a[href*="/shorts/"]');
   }
   const videoId = getVideoIdFromUrl(link && link.getAttribute("href"));
@@ -1146,11 +1201,6 @@ function applyNoTranslation() {
 }
 
 // ---------- 11. Prevent accidental Shorts scrolling ----------
-// Accumulates the scroll delta and only lets the event through to YouTube
-// once a deliberate threshold is crossed. After a switch, the cooldown
-// window no longer swallows wheel events - we simply stop evaluating
-// thresholds and let the reel scroll 100% natively, so the page state
-// (video + comments) always stays in sync.
 let shortsWheelAccumulator = 0, shortsWheelResetTimer = null, shortsWheelCooldown = false;
 const SHORTS_WHEEL_THRESHOLD = 200;
 const SHORTS_WHEEL_COOLDOWN_MS = 800;
@@ -1201,13 +1251,21 @@ function applyAll() {
 
 function onNavigate() {
   clearTimeout(navigateTimer);
-  volumeAppliedUrl = null;
-  qualityAppliedUrl = null;
-  expandAppliedUrl = null;
+  const id = getVideoIdFromUrl(location.href);
+  // Reset per-video guards ONLY when the video actually changes - YouTube
+  // can fire several navigation events for a single load, and resetting on
+  // each of them made the quality automation run (and reload the stream)
+  // multiple times.
+  if (id !== lastNavVideoId) {
+    lastNavVideoId = id;
+    volumeAppliedUrl = null;
+    qualityAppliedId = null;
+    qualityAttempts = 0;
+    expandAppliedUrl = null;
+    titleRescanCount = 0;
+  }
   navigateTimer = setTimeout(applyAll, 400);
   setTimeout(applyAll, 1200);
-  // Late quality verification - only does anything if the earlier passes
-  // never reached the menu (applyResolution self-guards per URL).
   setTimeout(applyResolution, 4000);
 }
 
@@ -1226,9 +1284,10 @@ function init() {
   document.addEventListener("wheel", handleShortsWheel, { capture: true, passive: false });
   document.addEventListener("wheel", handleVolumeWheel, { capture: true, passive: false });
   document.addEventListener("play", onVideoPlayCapture, true);
+  document.addEventListener("playing", onVideoPlayCapture, true);
+  document.addEventListener("volumechange", onVolumeChangeCapture, true);
   setInterval(() => {
     if (!settings) return;
-    applyResolution(); // also retries quality after long ad-blocker stalls
     fixShortsLoop();
     autoExpandPlayer();
     applyCaptions();
