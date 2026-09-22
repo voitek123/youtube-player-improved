@@ -4,7 +4,7 @@
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.8";
+const BUILD_TAG = "ypi-1.3.9";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -313,10 +313,6 @@ async function applyResolution() {
 }
 
 // ---------- 2. Default volume level ----------
-// Applied when the video actually starts playing ('playing' event bypasses
-// ad-blocker stalls). A protection window of ~3.5s is opened, and scheduled
-// re-asserts (+0.2s, +1s, +2s, +3s) guarantee the addon's volume beats any
-// delayed YouTube volume restore.
 let volumeAppliedUrl = null;
 const volumeAppliedVideos = new WeakSet();
 
@@ -376,7 +372,6 @@ function onVideoPlayCapture(e) {
 }
 
 function onVideoPlayingCapture(e) {
-  // 'playing' fires when media actually starts (after stalls/ads)
   if (!settings || !settings.enabled || !settings.fixedVolumeEnabled) return;
   const v = e.target;
   if (!(v instanceof HTMLVideoElement)) return;
@@ -437,18 +432,63 @@ function handleVolumeWheel(e) {
 }
 
 // ---------- 4. Mute hover previews ----------
+// Previews are muted at THREE layers so no unmuted audio can ever escape:
+//  1) a MutationObserver mutes any preview <video> the instant it is added
+//     to the DOM (before it can start playing);
+//  2) a capture-phase "play" listener mutes it at the exact moment playback
+//     begins (this is what removes the old choppy-audio window);
+//  3) a slow polling backstop (1s) catches anything the two above miss.
+// Videos that belong to real players (watch, Shorts, channel featured,
+// miniplayer, embeds) are NEVER touched.
 const HOVER_PREVIEW_SELECTOR =
-  "ytd-video-preview, #video-preview, .ytd-video-preview, ytd-video-preview-renderer, #hover-preview";
+  "ytd-video-preview, #video-preview, .ytd-video-preview, ytd-video-preview-renderer, #hover-preview, ytd-hover-card-renderer, ytm-video-preview-renderer, [class*='video-preview' i], [id*='video-preview' i]";
+const PREVIEW_PLAYER_EXCLUSIONS =
+  "#movie_player, #shorts-player, #c4-player, ytd-miniplayer, .html5-video-player, .ytp-player";
+
+function isHoverPreviewVideo(v) {
+  if (!(v instanceof HTMLVideoElement)) return false;
+  if (v.closest(PREVIEW_PLAYER_EXCLUSIONS)) return false;
+  // Any other <video> living outside the real players on youtube.com is a
+  // hover/inline preview (the selector list above is kept for clarity and
+  // for future layouts, but the exclusion check is the robust part).
+  return true;
+}
+
+function muteIfPreview(v) {
+  if (isHoverPreviewVideo(v) && !v.muted) {
+    try { v.muted = true; } catch (e) {}
+  }
+}
 
 function muteHoverPreviews() {
-  document.querySelectorAll(HOVER_PREVIEW_SELECTOR).forEach((box) => {
-    box.querySelectorAll("video").forEach((v) => { if (!v.muted) v.muted = true; });
-  });
+  document.querySelectorAll("video").forEach(muteIfPreview);
 }
+
+let hoverPreviewObserver = null;
+function startHoverPreviewObserver() {
+  if (hoverPreviewObserver) return;
+  hoverPreviewObserver = new MutationObserver((muts) => {
+    if (!settings || !settings.enabled || !settings.muteHoverPreviews) return;
+    for (const m of muts) {
+      m.addedNodes.forEach((node) => {
+        if (!(node instanceof Element)) return;
+        if (node.tagName === "VIDEO") muteIfPreview(node);
+        else if (node.querySelectorAll) node.querySelectorAll("video").forEach(muteIfPreview);
+      });
+    }
+  });
+  hoverPreviewObserver.observe(document.documentElement, { childList: true, subtree: true });
+}
+
+function onPreviewPlayCapture(e) {
+  if (!settings || !settings.enabled || !settings.muteHoverPreviews) return;
+  muteIfPreview(e.target);
+}
+
 function startHoverMute() {
-  if (hoverMuteInterval) return;
   muteHoverPreviews();
-  hoverMuteInterval = setInterval(muteHoverPreviews, 600);
+  if (hoverMuteInterval) return;
+  hoverMuteInterval = setInterval(muteHoverPreviews, 1000);
 }
 function stopHoverMute() { clearInterval(hoverMuteInterval); hoverMuteInterval = null; }
 
@@ -919,9 +959,6 @@ function fetchOriginalVideoMeta(videoId) {
 function markOriginalApplied(el, key) { el.dataset.yccOrigKey = key; }
 function isOriginalAppliedFor(el, key) { return el.dataset.yccOrigKey === key; }
 
-// Watch-page title, written ONLY to the inner formatted string, NEVER the
-// h1 container. Actively removes the 'is-empty' attribute that YouTube uses
-// to hide the title during re-renders.
 async function applyMainTitle() {
   if (!isWatchPage()) return;
   const videoId = getVideoIdFromUrl(location.href);
@@ -936,7 +973,7 @@ async function applyMainTitle() {
     "ytd-watch-metadata h1 yt-dynamic-sizing-formatted-string, #title h1 yt-dynamic-sizing-formatted-string"
   );
 
-  if (targets.length === 0) return; // Let MutationObserver retry later
+  if (targets.length === 0) return;
 
   targets.forEach((target) => {
     if (!target.isConnected) return;
@@ -951,14 +988,13 @@ async function applyMainTitle() {
     const oldTitle = currentText;
     target.textContent = meta.title;
     if (target.hasAttribute("title")) target.setAttribute("title", meta.title);
-    target.removeAttribute("is-empty"); // The critical fix
+    target.removeAttribute("is-empty");
     markOriginalApplied(target, videoId);
 
     if (oldTitle && document.title.includes(oldTitle)) {
       document.title = document.title.replace(oldTitle, meta.title);
     }
 
-    // Observe for YouTube re-adding is-empty
     if (!target.dataset.yccIsEmptyObserver) {
       target.dataset.yccIsEmptyObserver = "1";
       const obs = new MutationObserver((muts) => {
@@ -1320,6 +1356,7 @@ function onNavigate() {
 function init() {
   console.info("[YPI] content.js build " + BUILD_TAG);
   startPremiumSuppressor();
+  startHoverPreviewObserver();
   loadSettings().then(() => {
     applyAll();
     if (settings.enabled && settings.muteHoverPreviews) startHoverMute();
@@ -1334,6 +1371,7 @@ function init() {
   document.addEventListener("play", onVideoPlayCapture, true);
   document.addEventListener("playing", onVideoPlayingCapture, true);
   document.addEventListener("volumechange", onVolumeChangeCapture, true);
+  document.addEventListener("play", onPreviewPlayCapture, true);
   setInterval(() => {
     if (!settings) return;
     fixShortsLoop();
