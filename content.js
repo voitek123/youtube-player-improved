@@ -4,7 +4,7 @@
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.9";
+const BUILD_TAG = "ypi-1.3.10";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -432,32 +432,53 @@ function handleVolumeWheel(e) {
 }
 
 // ---------- 4. Mute hover previews ----------
-// Previews are muted at THREE layers so no unmuted audio can ever escape:
-//  1) a MutationObserver mutes any preview <video> the instant it is added
-//     to the DOM (before it can start playing);
+// Previews are muted at THREE layers so no unmuted audio can escape:
+//  1) a MutationObserver mutes any preview <video> the instant it is added;
 //  2) a capture-phase "play" listener mutes it at the exact moment playback
-//     begins (this is what removes the old choppy-audio window);
+//     begins;
 //  3) a slow polling backstop (1s) catches anything the two above miss.
-// Videos that belong to real players (watch, Shorts, channel featured,
-// miniplayer, embeds) are NEVER touched.
-const HOVER_PREVIEW_SELECTOR =
-  "ytd-video-preview, #video-preview, .ytd-video-preview, ytd-video-preview-renderer, #hover-preview, ytd-hover-card-renderer, ytm-video-preview-renderer, [class*='video-preview' i], [id*='video-preview' i]";
-const PREVIEW_PLAYER_EXCLUSIONS =
-  "#movie_player, #shorts-player, #c4-player, ytd-miniplayer, .html5-video-player, .ytp-player";
+// A "preview" is any <video> that is NOT the current page's real player
+// (watch / Shorts / channel featured / miniplayer). YouTube now plays
+// hover-preview audio through pooled SECONDARY players, so we no longer
+// exclude by container class - only by "is this the active main player".
+// Muting sets BOTH muted and volume=0 and is re-asserted on volumechange,
+// so YouTube cannot undo it through either property. Iframes that YouTube
+// itself creates for hover previews (referrer = youtube.com) are muted too.
 
-function isHoverPreviewVideo(v) {
+function isMainPlayerVideo(v) {
   if (!(v instanceof HTMLVideoElement)) return false;
-  if (v.closest(PREVIEW_PLAYER_EXCLUSIONS)) return false;
-  // Any other <video> living outside the real players on youtube.com is a
-  // hover/inline preview (the selector list above is kept for clarity and
-  // for future layouts, but the exclusion check is the robust part).
-  return true;
+  const player = getPlayer();
+  if (player && player.contains(v)) return true;
+  const shortsPlayer = document.getElementById("shorts-player");
+  if (shortsPlayer && shortsPlayer.contains(v)) return true;
+  const c4 = document.getElementById("c4-player");
+  if (c4 && c4.contains(v)) return true;
+  const mini = document.querySelector("ytd-miniplayer");
+  if (mini && mini.contains(v)) return true;
+  return false;
+}
+
+function isInternalPreviewFrame() {
+  try {
+    if (window.self === window.top) return false;
+    const ref = document.referrer || "";
+    return /^https?:\/\/(www\.|m\.)?youtube\.com\//.test(ref) ||
+           /^https?:\/\/(www\.|m\.)?youtube-nocookie\.com\//.test(ref);
+  } catch (e) { return false; }
+}
+
+function muteHard(v) {
+  try {
+    if (!v.muted) v.muted = true;
+    if (v.volume !== 0) v.volume = 0;
+  } catch (e) {}
 }
 
 function muteIfPreview(v) {
-  if (isHoverPreviewVideo(v) && !v.muted) {
-    try { v.muted = true; } catch (e) {}
-  }
+  if (!(v instanceof HTMLVideoElement)) return;
+  if (isInternalPreviewFrame()) { muteHard(v); return; }
+  if (isMainPlayerVideo(v)) return;
+  muteHard(v);
 }
 
 function muteHoverPreviews() {
@@ -483,6 +504,15 @@ function startHoverPreviewObserver() {
 function onPreviewPlayCapture(e) {
   if (!settings || !settings.enabled || !settings.muteHoverPreviews) return;
   muteIfPreview(e.target);
+}
+
+function onPreviewVolumeChangeCapture(e) {
+  if (!settings || !settings.enabled || !settings.muteHoverPreviews) return;
+  const v = e.target;
+  if (!(v instanceof HTMLVideoElement)) return;
+  if (!isInternalPreviewFrame() && isMainPlayerVideo(v)) return;
+  // A preview trying to unmute / raise its volume - push it back down.
+  muteHard(v);
 }
 
 function startHoverMute() {
@@ -877,7 +907,7 @@ function parseChaptersFromDescription(description) {
     if (!before && !after) return;
     const ts = m[1], idx = m.index;
     let title;
-    if (idx === 0 || /^[-–—•·▪▫‣⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
+    if (idx === 0 || /^[-–—•·▪▫⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
     else title = trimmed.substring(0, idx);
     title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫⁃→>*\s]+$/, "").trim();
     if (title.length < 2) return;
@@ -1372,6 +1402,7 @@ function init() {
   document.addEventListener("playing", onVideoPlayingCapture, true);
   document.addEventListener("volumechange", onVolumeChangeCapture, true);
   document.addEventListener("play", onPreviewPlayCapture, true);
+  document.addEventListener("volumechange", onPreviewVolumeChangeCapture, true);
   setInterval(() => {
     if (!settings) return;
     fixShortsLoop();
