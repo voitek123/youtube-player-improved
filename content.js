@@ -1,10 +1,13 @@
 // content.js - Youtube Player Improved
 // Runs on youtube.com AND on embedded players. Re-applies its behavior
 // every time YouTube's single-page-app navigates (yt-navigate-finish).
+// Performance-tuned: observers are event-driven and narrow, background
+// cadence is slow, and repeat work is skipped via synchronous caches so the
+// page feels like stock YouTube.
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.10";
+const BUILD_TAG = "ypi-1.3.11";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -432,18 +435,13 @@ function handleVolumeWheel(e) {
 }
 
 // ---------- 4. Mute hover previews ----------
-// Previews are muted at THREE layers so no unmuted audio can escape:
-//  1) a MutationObserver mutes any preview <video> the instant it is added;
-//  2) a capture-phase "play" listener mutes it at the exact moment playback
-//     begins;
-//  3) a slow polling backstop (1s) catches anything the two above miss.
-// A "preview" is any <video> that is NOT the current page's real player
-// (watch / Shorts / channel featured / miniplayer). YouTube now plays
-// hover-preview audio through pooled SECONDARY players, so we no longer
-// exclude by container class - only by "is this the active main player".
-// Muting sets BOTH muted and volume=0 and is re-asserted on volumechange,
-// so YouTube cannot undo it through either property. Iframes that YouTube
-// itself creates for hover previews (referrer = youtube.com) are muted too.
+// Event-driven and cheap: the observer reacts ONLY to added <video> nodes,
+// the capture-phase "play" listener mutes a preview at the exact moment it
+// starts, and a slow (2s) polling backstop catches stragglers. Muted
+// previews are tracked in a WeakSet so the volumechange handler only ever
+// touches known previews, and muteHard no-ops when already silent - no
+// tug-of-war with YouTube, no wasted writes.
+const knownPreviews = new WeakSet();
 
 function isMainPlayerVideo(v) {
   if (!(v instanceof HTMLVideoElement)) return false;
@@ -468,9 +466,11 @@ function isInternalPreviewFrame() {
 }
 
 function muteHard(v) {
+  knownPreviews.add(v);
   try {
-    if (!v.muted) v.muted = true;
-    if (v.volume !== 0) v.volume = 0;
+    if (v.muted && v.volume === 0) return;
+    v.muted = true;
+    v.volume = 0;
   } catch (e) {}
 }
 
@@ -492,9 +492,7 @@ function startHoverPreviewObserver() {
     if (!settings || !settings.enabled || !settings.muteHoverPreviews) return;
     for (const m of muts) {
       m.addedNodes.forEach((node) => {
-        if (!(node instanceof Element)) return;
-        if (node.tagName === "VIDEO") muteIfPreview(node);
-        else if (node.querySelectorAll) node.querySelectorAll("video").forEach(muteIfPreview);
+        if (node.nodeType === 1 && node.tagName === "VIDEO") muteIfPreview(node);
       });
     }
   });
@@ -510,15 +508,15 @@ function onPreviewVolumeChangeCapture(e) {
   if (!settings || !settings.enabled || !settings.muteHoverPreviews) return;
   const v = e.target;
   if (!(v instanceof HTMLVideoElement)) return;
-  if (!isInternalPreviewFrame() && isMainPlayerVideo(v)) return;
-  // A preview trying to unmute / raise its volume - push it back down.
+  if (!knownPreviews.has(v)) return;
+  if (v.muted && v.volume === 0) return;
   muteHard(v);
 }
 
 function startHoverMute() {
   muteHoverPreviews();
   if (hoverMuteInterval) return;
-  hoverMuteInterval = setInterval(muteHoverPreviews, 1000);
+  hoverMuteInterval = setInterval(muteHoverPreviews, 2000);
 }
 function stopHoverMute() { clearInterval(hoverMuteInterval); hoverMuteInterval = null; }
 
@@ -551,11 +549,13 @@ const shortsObserver = new MutationObserver((mutations) => {
     }
     m.addedNodes.forEach((node) => {
       if (node.nodeType !== 1) return;
-      const isVideo = node.tagName === "VIDEO";
-      const nestedVideos = node.querySelectorAll ? Array.from(node.querySelectorAll("video")) : [];
-      if (settings.stopShortsLoop) {
-        if (isVideo) neutralizeLoop(node);
-        nestedVideos.forEach(neutralizeLoop);
+      if (!settings.stopShortsLoop) return;
+      // Cheap: stop at the first nested video; the 500ms sweep catches any
+      // additional ones, so we avoid a full subtree scan per insertion.
+      if (node.tagName === "VIDEO") neutralizeLoop(node);
+      else {
+        const nested = node.querySelector("video");
+        if (nested) neutralizeLoop(nested);
       }
     });
   }
@@ -907,7 +907,7 @@ function parseChaptersFromDescription(description) {
     if (!before && !after) return;
     const ts = m[1], idx = m.index;
     let title;
-    if (idx === 0 || /^[-–—•·▪▫⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
+    if (idx === 0 || /^[-–—•·▪▫‣⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
     else title = trimmed.substring(0, idx);
     title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫⁃→>*\s]+$/, "").trim();
     if (title.length < 2) return;
@@ -918,6 +918,13 @@ function parseChaptersFromDescription(description) {
 }
 
 const videoMetaCache = new Map();
+const titleCacheSync = new Map();
+
+function cacheTitle(videoId, title) {
+  if (!videoId || !title) return;
+  titleCacheSync.set(videoId, title);
+  if (titleCacheSync.size > 300) titleCacheSync.delete(titleCacheSync.keys().next().value);
+}
 
 function fetchOriginalVideoMeta(videoId) {
   if (!videoId) return Promise.resolve(null);
@@ -981,7 +988,7 @@ function fetchOriginalVideoMeta(videoId) {
     return { title, description, chapters };
   })();
   videoMetaCache.set(videoId, promise);
-  promise.then((m) => { if (!m) videoMetaCache.delete(videoId); });
+  promise.then((m) => { if (!m) videoMetaCache.delete(videoId); else cacheTitle(videoId, m.title); });
   if (videoMetaCache.size > 300) videoMetaCache.delete(videoMetaCache.keys().next().value);
   return promise;
 }
@@ -1130,7 +1137,11 @@ function scanFeedTitles() {
   for (const el of nodes) {
     const id = getTitleVideoId(el);
     if (!id) continue;
-    const cheap = el.dataset.yccTitleFor === id || videoMetaCache.has(id);
+    const cachedTitle = titleCacheSync.get(id);
+    const marked = el.dataset.yccTitleFor === id;
+    // Already restored and still showing the original: skip with zero work.
+    if (marked && cachedTitle && el.textContent === cachedTitle) continue;
+    const cheap = marked || videoMetaCache.has(id);
     if (cheap || budget > 0) {
       if (!cheap) budget--;
       applyFeedTitle(el);
@@ -1281,7 +1292,7 @@ async function applyOriginalChapters() {
   if (!chapters.length) { stopChapterUpdater(); return; }
   const run = () => { updateChapterButton(chapters); updateChapterTooltip(chapters); updateChapterPanel(chapters); };
   run();
-  if (!chapterUpdateInterval) chapterUpdateInterval = setInterval(run, 250);
+  if (!chapterUpdateInterval) chapterUpdateInterval = setInterval(run, 400);
 }
 
 let translationObserver = null, translationScanTimer = null;
@@ -1293,7 +1304,7 @@ function scheduleTranslationScan() {
     scanFeedDescriptions();
     applyOriginalChapters();
     applyEmbedTitle();
-  }, 250);
+  }, 500);
 }
 function startTranslationObserver() {
   if (translationObserver) return;
@@ -1301,7 +1312,7 @@ function startTranslationObserver() {
     if (!settings || !settings.enabled || !settings.noTranslationEnabled) return;
     scheduleTranslationScan();
   });
-  translationObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  translationObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
 function stopTranslationObserver() {
   if (translationObserver) { translationObserver.disconnect(); translationObserver = null; }
@@ -1412,7 +1423,7 @@ function init() {
     applyHideCardsEndscreens();
     applyNoTranslation();
     if (settings.enabled && settings.blockPremiumPromos !== false) suppressPremiumDialogs(document.body);
-  }, 5000);
+  }, 10000);
 }
 
 if (document.readyState === "loading") {
