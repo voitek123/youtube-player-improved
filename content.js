@@ -1,13 +1,13 @@
 // content.js - Youtube Player Improved
 // Runs on youtube.com AND on embedded players. Re-applies its behavior
 // every time YouTube's single-page-app navigates (yt-navigate-finish).
-// Performance-tuned: observers are event-driven and narrow, background
-// cadence is slow, and repeat work is skipped via synchronous caches so the
-// page feels like stock YouTube.
+// Minimal-footprint design: no always-on subtree-scanning observers and no
+// polling loops except small feature-gated intervals, so the page behaves
+// like stock YouTube.
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.11";
+const BUILD_TAG = "ypi-1.3.17";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -29,10 +29,14 @@ const KEY_GROUPS = {
   translation: ["enabled", "noTranslationEnabled"],
 };
 
+// Hover-preview containers (used to keep Default volume away from previews).
+const HOVER_PREVIEW_SELECTOR =
+  "ytd-video-preview, #video-preview, .ytd-video-preview, ytd-video-preview-renderer, ytd-hover-card-view-model, [class*='video-preview' i]";
+
 let settings = {};
 let navigateTimer = null;
 let shortsSweepInterval = null;
-let hoverMuteInterval = null;
+let premiumSweepInterval = null;
 let qualityAppliedId = null;
 let qualityAttempts = 0;
 let qualityRetryTimer = null;
@@ -128,11 +132,40 @@ function isWatchPage() { return location.pathname.startsWith("/watch"); }
 function isEmbedPage() { return location.pathname.startsWith("/embed"); }
 function isAdShowing(player) { return !!player && player.classList.contains("ad-showing"); }
 
+// Default volume only applies on pages where a specific video/Short is
+// actually open - never on feed/home/search/channel pages, so it can never
+// touch hover previews there.
+function isVolumePageAllowed() {
+  return isWatchPage() || isShortsPage() || isEmbedPage();
+}
+
 function isPlayerReady() {
   const player = getPlayer();
   if (player && (player.classList.contains("ad-showing") || player.classList.contains("ad-interrupting"))) return false;
   const video = getVideo();
   return !!(video && video.readyState >= 1);
+}
+
+// STRICT "is this the real content video" test for the volume feature.
+// Hover-preview videos are always excluded; on normal pages we accept the
+// main video by explicit player IDs first, with the html5-main-video class
+// only as a last fallback (preview containers already ruled out above).
+function isMainVideoForVolume(v) {
+  if (!(v instanceof HTMLVideoElement)) return false;
+  if (v.closest(HOVER_PREVIEW_SELECTOR)) return false;
+  if (isEmbedPage()) {
+    const p = document.querySelector(".html5-video-player");
+    return !!(p && p.contains(v));
+  }
+  const ids = ["movie_player", "shorts-player", "c4-player"];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el && el.contains(v)) return true;
+  }
+  const mini = document.querySelector("ytd-miniplayer");
+  if (mini && mini.contains(v)) return true;
+  if (v.classList.contains("html5-main-video")) return true;
+  return false;
 }
 
 function isOptionDisabled(el) {
@@ -155,10 +188,10 @@ function isPremiumRow(o) {
 const PREMIUM_DIALOG_SELECTOR = 'tp-yt-paper-dialog, [role="dialog"]';
 
 function suppressPremiumDialogs(root) {
-  if (!(root instanceof Element)) return;
+  if (!root || !root.querySelectorAll) return;
   const nodes = [];
   if (root.matches && root.matches(PREMIUM_DIALOG_SELECTOR)) nodes.push(root);
-  if (root.querySelectorAll) root.querySelectorAll(PREMIUM_DIALOG_SELECTOR).forEach((n) => nodes.push(n));
+  root.querySelectorAll(PREMIUM_DIALOG_SELECTOR).forEach((n) => nodes.push(n));
   for (const dlg of nodes) {
     if (dlg.dataset.yccSuppressed) continue;
     const text = dlg.textContent || "";
@@ -174,11 +207,24 @@ let premiumSuppressObserver = null;
 function startPremiumSuppressor() {
   if (premiumSuppressObserver) return;
   premiumSuppressObserver = new MutationObserver((muts) => {
-    if (!settings || !settings.enabled) return;
-    if (settings.blockPremiumPromos === false) return;
-    for (const m of muts) m.addedNodes.forEach((n) => suppressPremiumDialogs(n));
+    if (!settings || !settings.enabled || settings.blockPremiumPromos === false) return;
+    for (const m of muts) {
+      m.addedNodes.forEach((node) => {
+        if (node.nodeType === 1 && node.matches && node.matches(PREMIUM_DIALOG_SELECTOR)) {
+          suppressPremiumDialogs(node);
+        }
+      });
+    }
   });
   premiumSuppressObserver.observe(document.documentElement, { childList: true, subtree: true });
+}
+
+function startPremiumSweep() {
+  if (premiumSweepInterval) return;
+  premiumSweepInterval = setInterval(() => {
+    if (!settings || !settings.enabled || settings.blockPremiumPromos === false) return;
+    suppressPremiumDialogs(document.body);
+  }, 2000);
 }
 
 // ---------- 1. Preferred quality ----------
@@ -320,7 +366,11 @@ let volumeAppliedUrl = null;
 const volumeAppliedVideos = new WeakSet();
 
 function setVolumeTo(video, target) {
-  const player = getPlayer();
+  let player = null;
+  if (video && video.closest) {
+    player = video.closest("#movie_player, #shorts-player, #c4-player, .html5-video-player, ytd-miniplayer");
+  }
+  if (!player) player = getPlayer();
   if (player && typeof player.setVolume === "function") {
     try {
       if (target > 0 && typeof player.isMuted === "function" && player.isMuted()) player.unMute();
@@ -340,6 +390,7 @@ function scheduleVolumeReasserts(video, target) {
   delays.forEach(delay => {
     setTimeout(() => {
       if (!settings || !settings.enabled || !settings.fixedVolumeEnabled) return;
+      if (!isVolumePageAllowed()) return;
       const now = Date.now();
       if (isShortsPage()) {
         const until = shortsVolumeWindows.get(video);
@@ -354,6 +405,7 @@ function scheduleVolumeReasserts(video, target) {
 
 function onVideoPlayCapture(e) {
   if (!settings || !settings.enabled || !settings.fixedVolumeEnabled) return;
+  if (!isVolumePageAllowed()) return;
   const v = e.target;
   if (!(v instanceof HTMLVideoElement)) return;
 
@@ -367,8 +419,7 @@ function onVideoPlayCapture(e) {
     return;
   }
 
-  const isMain = v.classList.contains("html5-main-video") || getPlayer()?.contains(v);
-  if (!isMain) return;
+  if (!isMainVideoForVolume(v)) return;
   if (volumeAppliedUrl === location.href) return;
   volumeAppliedUrl = location.href;
   setVolumeTo(v, target);
@@ -376,6 +427,7 @@ function onVideoPlayCapture(e) {
 
 function onVideoPlayingCapture(e) {
   if (!settings || !settings.enabled || !settings.fixedVolumeEnabled) return;
+  if (!isVolumePageAllowed()) return;
   const v = e.target;
   if (!(v instanceof HTMLVideoElement)) return;
 
@@ -388,8 +440,7 @@ function onVideoPlayingCapture(e) {
     return;
   }
 
-  const isMain = v.classList.contains("html5-main-video") || getPlayer()?.contains(v);
-  if (!isMain) return;
+  if (!isMainVideoForVolume(v)) return;
 
   setVolumeTo(v, target);
   volumeWindowUntil = Date.now() + 3500;
@@ -398,6 +449,7 @@ function onVideoPlayingCapture(e) {
 
 function onVolumeChangeCapture(e) {
   if (!settings || !settings.enabled || !settings.fixedVolumeEnabled) return;
+  if (!isVolumePageAllowed()) return;
   const v = e.target;
   if (!(v instanceof HTMLVideoElement)) return;
   const now = Date.now();
@@ -410,14 +462,14 @@ function onVolumeChangeCapture(e) {
     return;
   }
 
-  const isMain = v.classList.contains("html5-main-video") || getPlayer()?.contains(v);
-  if (!isMain) return;
+  if (!isMainVideoForVolume(v)) return;
   if (!volumeWindowUntil || now >= volumeWindowUntil) return;
   setVolumeTo(v, target);
 }
 
 function applyVolumeNow() {
   if (!settings.enabled || !settings.fixedVolumeEnabled) return;
+  if (!isVolumePageAllowed()) return;
   volumeAppliedUrl = location.href;
   const target = Math.min(100, Math.max(0, Math.round(settings.fixedVolume ?? 50)));
   setVolumeTo(getVideo(), target);
@@ -435,54 +487,91 @@ function handleVolumeWheel(e) {
 }
 
 // ---------- 4. Mute hover previews ----------
-// Event-driven and cheap: the observer reacts ONLY to added <video> nodes,
-// the capture-phase "play" listener mutes a preview at the exact moment it
-// starts, and a slow (2s) polling backstop catches stragglers. Muted
-// previews are tracked in a WeakSet so the volumechange handler only ever
-// touches known previews, and muteHard no-ops when already silent - no
-// tug-of-war with YouTube, no wasted writes.
-const knownPreviews = new WeakSet();
+// The addon never writes video.muted / video.volume on previews. When a
+// hover-preview node appears we wait until its playback actually renders
+// ("playing"), THEN click YouTube's own corner mute button once (targeted
+// precisely by volume/mute keywords), with a single 300ms verify-and-correct
+// pass. Clicking only at playback start avoids the premature control clicks
+// that made YouTube re-init (restart) the preview. Each preview instance is
+// processed at most once (WeakSet), so it can never oscillate.
+const previewActed = new WeakSet();
 
-function isMainPlayerVideo(v) {
-  if (!(v instanceof HTMLVideoElement)) return false;
-  const player = getPlayer();
-  if (player && player.contains(v)) return true;
-  const shortsPlayer = document.getElementById("shorts-player");
-  if (shortsPlayer && shortsPlayer.contains(v)) return true;
-  const c4 = document.getElementById("c4-player");
-  if (c4 && c4.contains(v)) return true;
-  const mini = document.querySelector("ytd-miniplayer");
-  if (mini && mini.contains(v)) return true;
-  return false;
+function findPreviewMuteButton(container) {
+  const buttons = Array.from(container.querySelectorAll("button, yt-button-shape, yt-icon-button, [role='button']"));
+  // Prefer an explicit volume/mute/sound control (label may be any language;
+  // "unmute" also contains "mute" and is the same toggle button).
+  for (const b of buttons) {
+    const aria = (b.getAttribute("aria-label") || "").toLowerCase();
+    const cls = (b.className || "").toString().toLowerCase();
+    if (/mute|volume|sound|wycisz|dźwięk|stumm|lautlos|volumen|silencio|sourdine/i.test(aria)) return b;
+    if (/volume|mute|sound/.test(cls)) return b;
+  }
+  // Fallback: first control-cluster button that isn't CC/close/etc.
+  for (const b of buttons) {
+    const cls = (b.className || "").toString().toLowerCase();
+    const aria = (b.getAttribute("aria-label") || "").toLowerCase();
+    if (/subtitle|caption|\bcc\b|close|dismiss|expand|more|menu/.test(cls)) continue;
+    if (/subtitle|caption|close|dismiss|expand|more|menu|zamknij|napisy/.test(aria)) continue;
+    return b;
+  }
+  return null;
 }
 
-function isInternalPreviewFrame() {
-  try {
-    if (window.self === window.top) return false;
-    const ref = document.referrer || "";
-    return /^https?:\/\/(www\.|m\.)?youtube\.com\//.test(ref) ||
-           /^https?:\/\/(www\.|m\.)?youtube-nocookie\.com\//.test(ref);
-  } catch (e) { return false; }
+function previewIsUnmuted(btn, video) {
+  const aria = (btn.getAttribute("aria-label") || "").toLowerCase();
+  if (aria) {
+    if (/unmute|turn on sound|restore sound|sound on|wyłącz wyciszenie|włącz dźwięk|ton einschalten|activar son|activer le son/i.test(aria)) return false;
+    if (/mute|wycisz|ton aus|silenciar|désactiver le son|silence/i.test(aria)) return true;
+  }
+  const pressed = btn.getAttribute("aria-pressed");
+  if (pressed === "true") return false;
+  if (pressed === "false") return true;
+  if (video) return !video.muted;
+  return true;
 }
 
-function muteHard(v) {
-  knownPreviews.add(v);
-  try {
-    if (v.muted && v.volume === 0) return;
-    v.muted = true;
-    v.volume = 0;
-  } catch (e) {}
-}
+function ensurePreviewMuted(container) {
+  if (previewActed.has(container)) return;
+  previewActed.add(container);
+  const video = container.querySelector("video");
 
-function muteIfPreview(v) {
-  if (!(v instanceof HTMLVideoElement)) return;
-  if (isInternalPreviewFrame()) { muteHard(v); return; }
-  if (isMainPlayerVideo(v)) return;
-  muteHard(v);
-}
+  const doMute = () => {
+    if (!container.isConnected) return;
+    const b = findPreviewMuteButton(container);
+    if (!b) return;
+    if (previewIsUnmuted(b, video)) {
+      try { b.click(); } catch (e) {}
+    }
+    // Single verify-and-correct pass.
+    setTimeout(() => {
+      if (!container.isConnected) return;
+      const b2 = findPreviewMuteButton(container);
+      if (b2 && previewIsUnmuted(b2, video)) {
+        try { b2.click(); } catch (e) {}
+      }
+    }, 300);
+  };
 
-function muteHoverPreviews() {
-  document.querySelectorAll("video").forEach(muteIfPreview);
+  if (video) {
+    // Wait until playback actually renders so we never click a control
+    // before the preview player is initialized (that caused restarts).
+    let done = false;
+    const onPlaying = () => {
+      if (done) return;
+      done = true;
+      video.removeEventListener("playing", onPlaying, true);
+      doMute();
+    };
+    video.addEventListener("playing", onPlaying, true);
+    setTimeout(() => {
+      if (done) return;
+      done = true;
+      video.removeEventListener("playing", onPlaying, true);
+      doMute();
+    }, 1200);
+  } else {
+    setTimeout(doMute, 300);
+  }
 }
 
 let hoverPreviewObserver = null;
@@ -492,33 +581,22 @@ function startHoverPreviewObserver() {
     if (!settings || !settings.enabled || !settings.muteHoverPreviews) return;
     for (const m of muts) {
       m.addedNodes.forEach((node) => {
-        if (node.nodeType === 1 && node.tagName === "VIDEO") muteIfPreview(node);
+        if (!(node instanceof Element)) return;
+        if (node.matches && node.matches(HOVER_PREVIEW_SELECTOR)) { ensurePreviewMuted(node); return; }
+        if (node.querySelector) {
+          const p = node.querySelector(HOVER_PREVIEW_SELECTOR);
+          if (p) ensurePreviewMuted(p);
+        }
       });
     }
   });
   hoverPreviewObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
 
-function onPreviewPlayCapture(e) {
-  if (!settings || !settings.enabled || !settings.muteHoverPreviews) return;
-  muteIfPreview(e.target);
-}
-
-function onPreviewVolumeChangeCapture(e) {
-  if (!settings || !settings.enabled || !settings.muteHoverPreviews) return;
-  const v = e.target;
-  if (!(v instanceof HTMLVideoElement)) return;
-  if (!knownPreviews.has(v)) return;
-  if (v.muted && v.volume === 0) return;
-  muteHard(v);
-}
-
 function startHoverMute() {
-  muteHoverPreviews();
-  if (hoverMuteInterval) return;
-  hoverMuteInterval = setInterval(muteHoverPreviews, 2000);
+  document.querySelectorAll(HOVER_PREVIEW_SELECTOR).forEach(ensurePreviewMuted);
 }
-function stopHoverMute() { clearInterval(hoverMuteInterval); hoverMuteInterval = null; }
+function stopHoverMute() { /* nothing persistent to stop */ }
 
 // ---------- 5. Prevent Shorts from looping ----------
 const shortsFixed = new WeakSet();
@@ -533,40 +611,17 @@ function neutralizeLoop(video) {
       set() { /* ignore */ },
       configurable: true,
     });
-  } catch (e) { /* attribute observer below still catches re-adds */ }
+  } catch (e) { /* sweep below still catches re-adds */ }
 }
 function fixShortsLoop() {
   if (!settings.enabled || !settings.stopShortsLoop) return;
   if (!isShortsPage()) return;
   document.querySelectorAll("video").forEach(neutralizeLoop);
 }
-const shortsObserver = new MutationObserver((mutations) => {
-  if (!settings || !settings.enabled || !isShortsPage()) return;
-  for (const m of mutations) {
-    if (m.type === "attributes" && m.attributeName === "loop") {
-      if (settings.stopShortsLoop && m.target instanceof HTMLVideoElement) stripLoop(m.target);
-      continue;
-    }
-    m.addedNodes.forEach((node) => {
-      if (node.nodeType !== 1) return;
-      if (!settings.stopShortsLoop) return;
-      // Cheap: stop at the first nested video; the 500ms sweep catches any
-      // additional ones, so we avoid a full subtree scan per insertion.
-      if (node.tagName === "VIDEO") neutralizeLoop(node);
-      else {
-        const nested = node.querySelector("video");
-        if (nested) neutralizeLoop(nested);
-      }
-    });
-  }
-});
 function startShortsSweep() {
   clearInterval(shortsSweepInterval);
-  if (!settings.enabled || !settings.stopShortsLoop) return;
-  shortsSweepInterval = setInterval(() => {
-    if (!isShortsPage()) return;
-    document.querySelectorAll("video[loop]").forEach(stripLoop);
-  }, 500);
+  if (!settings.enabled || !settings.stopShortsLoop || !isShortsPage()) return;
+  shortsSweepInterval = setInterval(fixShortsLoop, 500);
 }
 
 // ---------- 6. Auto-expand player (theater mode) ----------
@@ -592,6 +647,7 @@ function autoExpandPlayer() {
 // ---------- 7. Captions / subtitles control ----------
 function applyCaptions() {
   if (!settings.enabled || !settings.captionsControlEnabled) return;
+  if (!isWatchPage() && !isShortsPage() && !isEmbedPage()) return;
   const player = getPlayer();
   if (!player) return;
   if (!isPlayerReady()) return;
@@ -909,7 +965,7 @@ function parseChaptersFromDescription(description) {
     let title;
     if (idx === 0 || /^[-–—•·▪▫‣⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
     else title = trimmed.substring(0, idx);
-    title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫⁃→>*\s]+$/, "").trim();
+    title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫‣⁃→>*\s]+$/, "").trim();
     if (title.length < 2) return;
     list.push({ title, startMillis: timeStringToSeconds(ts) * 1000 });
   });
@@ -932,7 +988,6 @@ function fetchOriginalVideoMeta(videoId) {
   const promise = (async () => {
     let title = null, description = null, chapters = null;
 
-    // 0) Player API (fastest, untranslated, no network)
     const currentId = getVideoIdFromUrl(location.href);
     if (currentId === videoId) {
       let player = getPlayer();
@@ -946,7 +1001,6 @@ function fetchOriginalVideoMeta(videoId) {
       }
     }
 
-    // 1) oEmbed fallback
     if (!title) {
       try {
         const res = await fetchWithTimeout(
@@ -956,7 +1010,6 @@ function fetchOriginalVideoMeta(videoId) {
       } catch (e) {}
     }
 
-    // 2) InnerTube API
     const { apiKey, clientVersion } = extractInnertubeConfig();
     try {
       const res = await fetchWithTimeout(
@@ -980,7 +1033,6 @@ function fetchOriginalVideoMeta(videoId) {
       }
     } catch (e) {}
 
-    // 3) Watch-page fallbacks
     if (!title) title = await fetchTitleFromWatchPage(videoId);
     if (!description) description = await fetchDescriptionFallback(videoId);
     if (!chapters) chapters = parseChaptersFromDescription(description);
@@ -1139,7 +1191,6 @@ function scanFeedTitles() {
     if (!id) continue;
     const cachedTitle = titleCacheSync.get(id);
     const marked = el.dataset.yccTitleFor === id;
-    // Already restored and still showing the original: skip with zero work.
     if (marked && cachedTitle && el.textContent === cachedTitle) continue;
     const cheap = marked || videoMetaCache.has(id);
     if (cheap || budget > 0) {
@@ -1397,13 +1448,11 @@ function onNavigate() {
 function init() {
   console.info("[YPI] content.js build " + BUILD_TAG);
   startPremiumSuppressor();
+  startPremiumSweep();
   startHoverPreviewObserver();
   loadSettings().then(() => {
     applyAll();
     if (settings.enabled && settings.muteHoverPreviews) startHoverMute();
-    shortsObserver.observe(document.documentElement, {
-      childList: true, subtree: true, attributes: true, attributeFilter: ["loop"],
-    });
   });
   window.addEventListener("yt-navigate-finish", onNavigate);
   window.addEventListener("yt-page-data-updated", onNavigate);
@@ -1412,8 +1461,6 @@ function init() {
   document.addEventListener("play", onVideoPlayCapture, true);
   document.addEventListener("playing", onVideoPlayingCapture, true);
   document.addEventListener("volumechange", onVolumeChangeCapture, true);
-  document.addEventListener("play", onPreviewPlayCapture, true);
-  document.addEventListener("volumechange", onPreviewVolumeChangeCapture, true);
   setInterval(() => {
     if (!settings) return;
     fixShortsLoop();
@@ -1422,7 +1469,6 @@ function init() {
     startMiniplayerObserving();
     applyHideCardsEndscreens();
     applyNoTranslation();
-    if (settings.enabled && settings.blockPremiumPromos !== false) suppressPremiumDialogs(document.body);
   }, 10000);
 }
 
