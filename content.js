@@ -1,13 +1,14 @@
 // content.js - Youtube Player Improved
 // Runs on youtube.com AND on embedded players. Re-applies its behavior
 // every time YouTube's single-page-app navigates (yt-navigate-finish).
-// Minimal-footprint design: no always-on subtree-scanning observers and no
-// polling loops except small feature-gated intervals, so the page behaves
-// like stock YouTube.
+// Minimal-footprint design: no always-on subtree-scanning observers doing
+// per-node work, no polling sweeps, and heavy translation scans are deferred
+// until after content paints and then run only on navigation / settled
+// mutations - so the page behaves like stock YouTube.
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.17";
+const BUILD_TAG = "ypi-1.3.18";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -36,7 +37,6 @@ const HOVER_PREVIEW_SELECTOR =
 let settings = {};
 let navigateTimer = null;
 let shortsSweepInterval = null;
-let premiumSweepInterval = null;
 let qualityAppliedId = null;
 let qualityAttempts = 0;
 let qualityRetryTimer = null;
@@ -185,6 +185,9 @@ function isPremiumRow(o) {
 }
 
 // ---------- Premium upsell suppression ----------
+// Observer-only (no polling sweep): the callback does a single cheap
+// matches() per added node, and dialogs are hidden pre-paint when the added
+// node IS the dialog.
 const PREMIUM_DIALOG_SELECTOR = 'tp-yt-paper-dialog, [role="dialog"]';
 
 function suppressPremiumDialogs(root) {
@@ -217,14 +220,6 @@ function startPremiumSuppressor() {
     }
   });
   premiumSuppressObserver.observe(document.documentElement, { childList: true, subtree: true });
-}
-
-function startPremiumSweep() {
-  if (premiumSweepInterval) return;
-  premiumSweepInterval = setInterval(() => {
-    if (!settings || !settings.enabled || settings.blockPremiumPromos === false) return;
-    suppressPremiumDialogs(document.body);
-  }, 2000);
 }
 
 // ---------- 1. Preferred quality ----------
@@ -491,22 +486,18 @@ function handleVolumeWheel(e) {
 // hover-preview node appears we wait until its playback actually renders
 // ("playing"), THEN click YouTube's own corner mute button once (targeted
 // precisely by volume/mute keywords), with a single 300ms verify-and-correct
-// pass. Clicking only at playback start avoids the premature control clicks
-// that made YouTube re-init (restart) the preview. Each preview instance is
-// processed at most once (WeakSet), so it can never oscillate.
+// pass. The observer only does a cheap matches() per added node (no subtree
+// scans), so feed loading is not slowed.
 const previewActed = new WeakSet();
 
 function findPreviewMuteButton(container) {
   const buttons = Array.from(container.querySelectorAll("button, yt-button-shape, yt-icon-button, [role='button']"));
-  // Prefer an explicit volume/mute/sound control (label may be any language;
-  // "unmute" also contains "mute" and is the same toggle button).
   for (const b of buttons) {
     const aria = (b.getAttribute("aria-label") || "").toLowerCase();
     const cls = (b.className || "").toString().toLowerCase();
     if (/mute|volume|sound|wycisz|dźwięk|stumm|lautlos|volumen|silencio|sourdine/i.test(aria)) return b;
     if (/volume|mute|sound/.test(cls)) return b;
   }
-  // Fallback: first control-cluster button that isn't CC/close/etc.
   for (const b of buttons) {
     const cls = (b.className || "").toString().toLowerCase();
     const aria = (b.getAttribute("aria-label") || "").toLowerCase();
@@ -542,7 +533,6 @@ function ensurePreviewMuted(container) {
     if (previewIsUnmuted(b, video)) {
       try { b.click(); } catch (e) {}
     }
-    // Single verify-and-correct pass.
     setTimeout(() => {
       if (!container.isConnected) return;
       const b2 = findPreviewMuteButton(container);
@@ -553,8 +543,6 @@ function ensurePreviewMuted(container) {
   };
 
   if (video) {
-    // Wait until playback actually renders so we never click a control
-    // before the preview player is initialized (that caused restarts).
     let done = false;
     const onPlaying = () => {
       if (done) return;
@@ -581,11 +569,9 @@ function startHoverPreviewObserver() {
     if (!settings || !settings.enabled || !settings.muteHoverPreviews) return;
     for (const m of muts) {
       m.addedNodes.forEach((node) => {
-        if (!(node instanceof Element)) return;
-        if (node.matches && node.matches(HOVER_PREVIEW_SELECTOR)) { ensurePreviewMuted(node); return; }
-        if (node.querySelector) {
-          const p = node.querySelector(HOVER_PREVIEW_SELECTOR);
-          if (p) ensurePreviewMuted(p);
+        // Cheap matches() only - no per-node subtree querySelector.
+        if (node.nodeType === 1 && node.matches && node.matches(HOVER_PREVIEW_SELECTOR)) {
+          ensurePreviewMuted(node);
         }
       });
     }
@@ -1168,7 +1154,7 @@ async function applyFeedTitle(titleEl) {
 }
 
 function scheduleTitleRescan() {
-  if (titleRescanTimer || titleRescanCount >= 3) return;
+  if (titleRescanTimer || titleRescanCount >= 2) return;
   titleRescanTimer = setTimeout(() => {
     titleRescanTimer = null;
     titleRescanCount++;
@@ -1355,7 +1341,7 @@ function scheduleTranslationScan() {
     scanFeedDescriptions();
     applyOriginalChapters();
     applyEmbedTitle();
-  }, 500);
+  }, 900);
 }
 function startTranslationObserver() {
   if (translationObserver) return;
@@ -1369,6 +1355,9 @@ function stopTranslationObserver() {
   if (translationObserver) { translationObserver.disconnect(); translationObserver = null; }
   clearTimeout(translationScanTimer);
 }
+// First run is deferred (~2.5s after navigation) so heavy full-document
+// scans never compete with thumbnail loading; afterwards the observer keeps
+// things up to date on settled mutations.
 function applyNoTranslation() {
   if (!(settings.enabled && settings.noTranslationEnabled)) { stopTranslationObserver(); stopChapterUpdater(); return; }
   startTranslationObserver();
@@ -1378,6 +1367,9 @@ function applyNoTranslation() {
   scanFeedDescriptions();
   applyOriginalChapters();
   applyEmbedTitle();
+}
+function scheduleFirstTranslationRun() {
+  setTimeout(() => applyNoTranslation(), 2500);
 }
 
 // ---------- 11. Prevent accidental Shorts scrolling ----------
@@ -1417,6 +1409,8 @@ function handleShortsWheel(e) {
 
 // ---------- Orchestration ----------
 
+// NOTE: applyNoTranslation is intentionally NOT called here; it is scheduled
+// separately (~2.5s after navigation) so heavy scans never run mid-load.
 function applyAll() {
   if (!settings) return;
   applyResolution();
@@ -1426,7 +1420,6 @@ function applyAll() {
   applyCaptions();
   startMiniplayerObserving();
   applyHideCardsEndscreens();
-  applyNoTranslation();
 }
 
 function onNavigate() {
@@ -1443,15 +1436,16 @@ function onNavigate() {
   navigateTimer = setTimeout(applyAll, 400);
   setTimeout(applyAll, 1200);
   setTimeout(applyResolution, 4000);
+  scheduleFirstTranslationRun();
 }
 
 function init() {
   console.info("[YPI] content.js build " + BUILD_TAG);
   startPremiumSuppressor();
-  startPremiumSweep();
   startHoverPreviewObserver();
   loadSettings().then(() => {
     applyAll();
+    scheduleFirstTranslationRun();
     if (settings.enabled && settings.muteHoverPreviews) startHoverMute();
   });
   window.addEventListener("yt-navigate-finish", onNavigate);
@@ -1468,7 +1462,6 @@ function init() {
     applyCaptions();
     startMiniplayerObserving();
     applyHideCardsEndscreens();
-    applyNoTranslation();
   }, 10000);
 }
 
