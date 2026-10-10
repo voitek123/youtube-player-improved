@@ -1,14 +1,13 @@
 // content.js - Youtube Player Improved
 // Runs on youtube.com AND on embedded players. Re-applies its behavior
 // every time YouTube's single-page-app navigates (yt-navigate-finish).
-// Minimal-footprint design: no always-on subtree-scanning observers doing
-// per-node work, no polling sweeps, and heavy translation scans are deferred
-// until after content paints and then run only on navigation / settled
-// mutations - so the page behaves like stock YouTube.
+// Minimal-footprint design: no whole-document polling; observers do cheap
+// per-node checks; heavy scans are deferred and cached; Shorts wheel gating
+// is motion-aware. The page behaves like stock YouTube.
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.18";
+const BUILD_TAG = "ypi-1.3.19";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -37,6 +36,7 @@ const HOVER_PREVIEW_SELECTOR =
 let settings = {};
 let navigateTimer = null;
 let shortsSweepInterval = null;
+let premiumSweepInterval = null;
 let qualityAppliedId = null;
 let qualityAttempts = 0;
 let qualityRetryTimer = null;
@@ -47,6 +47,7 @@ const shortsVolumeWindows = new WeakMap();
 let lastNavVideoId = null;
 let titleRescanTimer = null;
 let titleRescanCount = 0;
+let lastStageMoveTime = 0;
 
 // ---------- Settings ----------
 
@@ -108,6 +109,10 @@ function getPlayer() {
   return document.getElementById("movie_player") || document.querySelector(".html5-video-player");
 }
 
+function getPopupContainer() {
+  return document.querySelector("ytd-popup-container");
+}
+
 function getActiveVideoAmong(videos) {
   if (videos.length <= 1) return videos[0] || null;
   let best = null, bestVisibleArea = -1;
@@ -132,9 +137,6 @@ function isWatchPage() { return location.pathname.startsWith("/watch"); }
 function isEmbedPage() { return location.pathname.startsWith("/embed"); }
 function isAdShowing(player) { return !!player && player.classList.contains("ad-showing"); }
 
-// Default volume only applies on pages where a specific video/Short is
-// actually open - never on feed/home/search/channel pages, so it can never
-// touch hover previews there.
 function isVolumePageAllowed() {
   return isWatchPage() || isShortsPage() || isEmbedPage();
 }
@@ -146,10 +148,6 @@ function isPlayerReady() {
   return !!(video && video.readyState >= 1);
 }
 
-// STRICT "is this the real content video" test for the volume feature.
-// Hover-preview videos are always excluded; on normal pages we accept the
-// main video by explicit player IDs first, with the html5-main-video class
-// only as a last fallback (preview containers already ruled out above).
 function isMainVideoForVolume(v) {
   if (!(v instanceof HTMLVideoElement)) return false;
   if (v.closest(HOVER_PREVIEW_SELECTOR)) return false;
@@ -185,9 +183,9 @@ function isPremiumRow(o) {
 }
 
 // ---------- Premium upsell suppression ----------
-// Observer-only (no polling sweep): the callback does a single cheap
-// matches() per added node, and dialogs are hidden pre-paint when the added
-// node IS the dialog.
+// Observer fast-path (cheap matches() per added node) PLUS a 2s sweep scoped
+// to ytd-popup-container (a tiny subtree) so dialogs added inside a wrapper
+// node are still caught without scanning the whole document.
 const PREMIUM_DIALOG_SELECTOR = 'tp-yt-paper-dialog, [role="dialog"]';
 
 function suppressPremiumDialogs(root) {
@@ -222,13 +220,53 @@ function startPremiumSuppressor() {
   premiumSuppressObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
 
+function startPremiumSweep() {
+  if (premiumSweepInterval) return;
+  premiumSweepInterval = setInterval(() => {
+    if (!settings || !settings.enabled || settings.blockPremiumPromos === false) return;
+    const pc = getPopupContainer();
+    if (pc) suppressPremiumDialogs(pc);
+  }, 2000);
+}
+
 // ---------- 1. Preferred quality ----------
 let resolutionInFlight = false;
 const MENU_ROOT_SELECTOR = '[role="menu"], .ytp-menu, .ytp-settings-menu, .ytp-panel, .ytp-panel-menu';
+const ITEM_SELECTOR =
+  '.ytp-settings-menu [role="menuitemradio"], .ytp-settings-menu [role="menuitem"], .ytp-settings-menu .ytp-menuitem, .ytp-panel-menu [role="menuitemradio"], .ytp-panel-menu [role="menuitem"], .ytp-panel-menu .ytp-menuitem, [role="menu"] [role="menuitemradio"], [role="menu"] [role="menuitem"], .ytp-menu [role="menuitemradio"], .ytp-menu .ytp-menuitem';
+const RADIO_SELECTOR =
+  '.ytp-panel-menu [role="menuitemradio"], .ytp-settings-menu [role="menuitemradio"], [role="menu"] [role="menuitemradio"], .ytp-menu [role="menuitemradio"]';
+const RES_PATTERN = /\d{2,4}p(\d{1,3})?/i;
+
+// YouTube sometimes portals the settings menu outside #movie_player; search
+// player first, then the popup container, then the document.
+function queryMenuItems(player) {
+  let items = Array.from(player.querySelectorAll(ITEM_SELECTOR));
+  if (!items.length) {
+    const pc = getPopupContainer();
+    if (pc) items = Array.from(pc.querySelectorAll(ITEM_SELECTOR));
+  }
+  if (!items.length) items = Array.from(document.querySelectorAll(ITEM_SELECTOR));
+  return items;
+}
+function queryMenuRadios(player) {
+  let radios = Array.from(player.querySelectorAll(RADIO_SELECTOR));
+  if (!radios.length) {
+    const pc = getPopupContainer();
+    if (pc) radios = Array.from(pc.querySelectorAll(RADIO_SELECTOR));
+  }
+  if (!radios.length) radios = Array.from(document.querySelectorAll(RADIO_SELECTOR));
+  return radios;
+}
 
 function menuVisible(player, settingsBtn) {
   if (settingsBtn.getAttribute("aria-expanded") === "true") return true;
-  const m = player.querySelector(MENU_ROOT_SELECTOR);
+  let m = player.querySelector(MENU_ROOT_SELECTOR);
+  if (!m) {
+    const pc = getPopupContainer();
+    m = pc && pc.querySelector(MENU_ROOT_SELECTOR);
+  }
+  if (!m) m = document.querySelector(MENU_ROOT_SELECTOR);
   return !!(m && m.offsetParent !== null);
 }
 
@@ -278,10 +316,6 @@ async function applyResolution() {
     if (!visible) return;
   }
 
-  const ITEM_SELECTOR =
-    '.ytp-settings-menu [role="menuitemradio"], .ytp-settings-menu [role="menuitem"], .ytp-settings-menu .ytp-menuitem, .ytp-panel-menu [role="menuitemradio"], .ytp-panel-menu [role="menuitem"], .ytp-panel-menu .ytp-menuitem, [role="menu"] [role="menuitemradio"], [role="menu"] [role="menuitem"], .ytp-menu [role="menuitemradio"], .ytp-menu .ytp-menuitem';
-  const RES_PATTERN = /\d{2,4}p(\d{1,3})?/i;
-
   const hiddenRoots = [];
   function hideRoot(el) {
     if (!el) return;
@@ -296,10 +330,12 @@ async function applyResolution() {
   resolutionInFlight = true;
   document.documentElement.classList.add("ycc-quiet-menus");
   player.querySelectorAll(MENU_ROOT_SELECTOR).forEach(hideRoot);
+  const pc0 = getPopupContainer();
+  if (pc0) pc0.querySelectorAll(MENU_ROOT_SELECTOR).forEach(hideRoot);
   try {
     settingsBtn.click();
     const menuItems = await waitFor(() => {
-      const items = Array.from(player.querySelectorAll(ITEM_SELECTOR));
+      const items = queryMenuItems(player);
       return items.length ? items : null;
     }, 1500);
     if (!menuItems) return;
@@ -321,8 +357,8 @@ async function applyResolution() {
       qualityItem.click();
 
       const options = await waitFor(() => {
-        const radios = Array.from(player.querySelectorAll('.ytp-panel-menu [role="menuitemradio"], .ytp-settings-menu [role="menuitemradio"], [role="menu"] [role="menuitemradio"], .ytp-menu [role="menuitemradio"]'));
-        const items = radios.length ? radios : Array.from(player.querySelectorAll(ITEM_SELECTOR));
+        const radios = queryMenuRadios(player);
+        const items = radios.length ? radios : queryMenuItems(player);
         return items.length ? items : null;
       }, 1500);
       if (options && options[0]) hideRoot(options[0]);
@@ -351,7 +387,7 @@ async function applyResolution() {
     }
     document.documentElement.classList.remove("ycc-quiet-menus");
     hiddenRoots.forEach((r) => r.style.removeProperty("display"));
-    if (blockPromos) setTimeout(() => suppressPremiumDialogs(document.body), 300);
+    if (blockPromos) setTimeout(() => suppressPremiumDialogs(getPopupContainer() || document.body), 300);
     resolutionInFlight = false;
   }
 }
@@ -482,12 +518,6 @@ function handleVolumeWheel(e) {
 }
 
 // ---------- 4. Mute hover previews ----------
-// The addon never writes video.muted / video.volume on previews. When a
-// hover-preview node appears we wait until its playback actually renders
-// ("playing"), THEN click YouTube's own corner mute button once (targeted
-// precisely by volume/mute keywords), with a single 300ms verify-and-correct
-// pass. The observer only does a cheap matches() per added node (no subtree
-// scans), so feed loading is not slowed.
 const previewActed = new WeakSet();
 
 function findPreviewMuteButton(container) {
@@ -569,7 +599,6 @@ function startHoverPreviewObserver() {
     if (!settings || !settings.enabled || !settings.muteHoverPreviews) return;
     for (const m of muts) {
       m.addedNodes.forEach((node) => {
-        // Cheap matches() only - no per-node subtree querySelector.
         if (node.nodeType === 1 && node.matches && node.matches(HOVER_PREVIEW_SELECTOR)) {
           ensurePreviewMuted(node);
         }
@@ -949,7 +978,7 @@ function parseChaptersFromDescription(description) {
     if (!before && !after) return;
     const ts = m[1], idx = m.index;
     let title;
-    if (idx === 0 || /^[-–—•·▪▫‣⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
+    if (idx === 0 || /^[-–—•·▪▫‣→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
     else title = trimmed.substring(0, idx);
     title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫‣⁃→>*\s]+$/, "").trim();
     if (title.length < 2) return;
@@ -1154,7 +1183,7 @@ async function applyFeedTitle(titleEl) {
 }
 
 function scheduleTitleRescan() {
-  if (titleRescanTimer || titleRescanCount >= 2) return;
+  if (titleRescanTimer || titleRescanCount >= 3) return;
   titleRescanTimer = setTimeout(() => {
     titleRescanTimer = null;
     titleRescanCount++;
@@ -1170,7 +1199,7 @@ function scanFeedTitles() {
     const span = a.querySelector("span[role='text']") || a.querySelector("span");
     if (span) nodes.push(span);
   });
-  let budget = 6;
+  let budget = 12;
   let deferred = false;
   for (const el of nodes) {
     const id = getTitleVideoId(el);
@@ -1355,9 +1384,6 @@ function stopTranslationObserver() {
   if (translationObserver) { translationObserver.disconnect(); translationObserver = null; }
   clearTimeout(translationScanTimer);
 }
-// First run is deferred (~2.5s after navigation) so heavy full-document
-// scans never compete with thumbnail loading; afterwards the observer keeps
-// things up to date on settled mutations.
 function applyNoTranslation() {
   if (!(settings.enabled && settings.noTranslationEnabled)) { stopTranslationObserver(); stopChapterUpdater(); return; }
   startTranslationObserver();
@@ -1368,19 +1394,38 @@ function applyNoTranslation() {
   applyOriginalChapters();
   applyEmbedTitle();
 }
+// First pass ~2.5s after navigation (after thumbnails paint); a second pass
+// at ~6s catches titles that render late. Both are one-shots per navigation.
 function scheduleFirstTranslationRun() {
   setTimeout(() => applyNoTranslation(), 2500);
+  setTimeout(() => {
+    if (settings && settings.enabled && settings.noTranslationEnabled) applyNoTranslation();
+  }, 6000);
 }
 
 // ---------- 11. Prevent accidental Shorts scrolling ----------
-let shortsWheelAccumulator = 0, shortsWheelResetTimer = null, shortsWheelCooldown = false;
+// Motion-aware gating: while the reel is actually moving (snap/momentum in
+// progress) wheel events pass through so an in-flight snap is never frozen;
+// the instant the stage is at rest, sub-threshold wheels are blocked again.
+// This replaces the old blind 800ms "native" cooldown, which both let slight
+// touches scroll (right after a switch) and could interrupt a slow snap.
+let shortsWheelAccumulator = 0, shortsWheelResetTimer = null;
 const SHORTS_WHEEL_THRESHOLD = 200;
-const SHORTS_WHEEL_COOLDOWN_MS = 800;
 const SHORTS_WHEEL_RESET_MS = 300;
+const SHORTS_STAGE_MOVING_MS = 400;
 const SHORTS_WHEEL_EXEMPT_SELECTOR =
   "ytd-comments, ytd-engagement-panel-section-list-renderer, #panels, #secondary, #related, #guide, #masthead-container, header, ytd-rich-section-renderer, ytd-shelf-renderer";
 const SHORTS_WHEEL_STAGE_SELECTOR =
   "ytd-shorts, #shorts-container, #page-container, ytd-reel-video-renderer, #player-container";
+
+function onStageScrollCapture(e) {
+  if (!settings || !settings.enabled || !settings.disableShortsWheelScroll) return;
+  if (!isShortsPage()) return;
+  const t = e.target;
+  if (!(t instanceof Element)) return;
+  if (!t.closest(SHORTS_WHEEL_STAGE_SELECTOR)) return;
+  lastStageMoveTime = performance.now();
+}
 
 function handleShortsWheel(e) {
   if (!settings || !settings.enabled || !settings.disableShortsWheelScroll) return;
@@ -1388,7 +1433,8 @@ function handleShortsWheel(e) {
   if (!(e.target instanceof Element)) return;
   if (e.target.closest(SHORTS_WHEEL_EXEMPT_SELECTOR)) return;
   if (!e.target.closest(SHORTS_WHEEL_STAGE_SELECTOR)) return;
-  if (shortsWheelCooldown) return;
+  // Reel is mid-motion (snap/momentum): let wheel through so it finishes.
+  if (performance.now() - lastStageMoveTime < SHORTS_STAGE_MOVING_MS) return;
   let delta = e.deltaY;
   if (e.deltaMode === 1) delta *= 30;
   if (e.deltaMode === 2) delta *= window.innerHeight;
@@ -1398,9 +1444,8 @@ function handleShortsWheel(e) {
   shortsWheelResetTimer = setTimeout(() => { shortsWheelAccumulator = 0; }, SHORTS_WHEEL_RESET_MS);
   if (Math.abs(shortsWheelAccumulator) >= SHORTS_WHEEL_THRESHOLD) {
     shortsWheelAccumulator = 0;
-    shortsWheelCooldown = true;
-    setTimeout(() => { shortsWheelCooldown = false; }, SHORTS_WHEEL_COOLDOWN_MS);
-    return;
+    lastStageMoveTime = performance.now(); // snap about to start
+    return; // allow this event
   }
   e.preventDefault();
   e.stopPropagation();
@@ -1409,8 +1454,6 @@ function handleShortsWheel(e) {
 
 // ---------- Orchestration ----------
 
-// NOTE: applyNoTranslation is intentionally NOT called here; it is scheduled
-// separately (~2.5s after navigation) so heavy scans never run mid-load.
 function applyAll() {
   if (!settings) return;
   applyResolution();
@@ -1442,6 +1485,7 @@ function onNavigate() {
 function init() {
   console.info("[YPI] content.js build " + BUILD_TAG);
   startPremiumSuppressor();
+  startPremiumSweep();
   startHoverPreviewObserver();
   loadSettings().then(() => {
     applyAll();
@@ -1452,6 +1496,7 @@ function init() {
   window.addEventListener("yt-page-data-updated", onNavigate);
   document.addEventListener("wheel", handleShortsWheel, { capture: true, passive: false });
   document.addEventListener("wheel", handleVolumeWheel, { capture: true, passive: false });
+  document.addEventListener("scroll", onStageScrollCapture, true);
   document.addEventListener("play", onVideoPlayCapture, true);
   document.addEventListener("playing", onVideoPlayingCapture, true);
   document.addEventListener("volumechange", onVolumeChangeCapture, true);
