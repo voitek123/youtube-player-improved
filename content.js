@@ -2,12 +2,11 @@
 // Runs on youtube.com AND on embedded players. Re-applies its behavior
 // every time YouTube's single-page-app navigates (yt-navigate-finish).
 // Minimal-footprint design: no whole-document polling; observers do cheap
-// per-node checks; heavy scans are deferred and cached; Shorts wheel gating
-// is motion-aware. The page behaves like stock YouTube.
+// per-node checks; heavy scans are deferred and cached.
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.19";
+const BUILD_TAG = "ypi-1.3.20";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -29,9 +28,13 @@ const KEY_GROUPS = {
   translation: ["enabled", "noTranslationEnabled"],
 };
 
-// Hover-preview containers (used to keep Default volume away from previews).
+// Genuine hover-preview containers only (no broad wildcards, so we can never
+// mistake a wrapper around the real player for a preview).
 const HOVER_PREVIEW_SELECTOR =
-  "ytd-video-preview, #video-preview, .ytd-video-preview, ytd-video-preview-renderer, ytd-hover-card-view-model, [class*='video-preview' i]";
+  "ytd-video-preview, #video-preview, .ytd-video-preview, ytd-video-preview-renderer, ytd-hover-card-view-model";
+
+// The real content players. We must NEVER press buttons inside these.
+const REAL_PLAYER_SELECTOR = "#movie_player, #shorts-player, #c4-player, ytd-miniplayer";
 
 let settings = {};
 let navigateTimer = null;
@@ -47,7 +50,6 @@ const shortsVolumeWindows = new WeakMap();
 let lastNavVideoId = null;
 let titleRescanTimer = null;
 let titleRescanCount = 0;
-let lastStageMoveTime = 0;
 
 // ---------- Settings ----------
 
@@ -148,6 +150,11 @@ function isPlayerReady() {
   return !!(video && video.readyState >= 1);
 }
 
+// True if the element lives inside one of the real content players.
+function isInRealPlayer(el) {
+  return !!(el && el.closest && el.closest(REAL_PLAYER_SELECTOR));
+}
+
 function isMainVideoForVolume(v) {
   if (!(v instanceof HTMLVideoElement)) return false;
   if (v.closest(HOVER_PREVIEW_SELECTOR)) return false;
@@ -183,9 +190,6 @@ function isPremiumRow(o) {
 }
 
 // ---------- Premium upsell suppression ----------
-// Observer fast-path (cheap matches() per added node) PLUS a 2s sweep scoped
-// to ytd-popup-container (a tiny subtree) so dialogs added inside a wrapper
-// node are still caught without scanning the whole document.
 const PREMIUM_DIALOG_SELECTOR = 'tp-yt-paper-dialog, [role="dialog"]';
 
 function suppressPremiumDialogs(root) {
@@ -238,8 +242,6 @@ const RADIO_SELECTOR =
   '.ytp-panel-menu [role="menuitemradio"], .ytp-settings-menu [role="menuitemradio"], [role="menu"] [role="menuitemradio"], .ytp-menu [role="menuitemradio"]';
 const RES_PATTERN = /\d{2,4}p(\d{1,3})?/i;
 
-// YouTube sometimes portals the settings menu outside #movie_player; search
-// player first, then the popup container, then the document.
 function queryMenuItems(player) {
   let items = Array.from(player.querySelectorAll(ITEM_SELECTOR));
   if (!items.length) {
@@ -518,6 +520,10 @@ function handleVolumeWheel(e) {
 }
 
 // ---------- 4. Mute hover previews ----------
+// Only genuine hover-preview boxes are touched. We never act on Shorts
+// pages, never act on anything inside a real player, and never press a
+// button that lives inside a real player - so the main video/Short can no
+// longer be muted by accident (the old volume-0 bug).
 const previewActed = new WeakSet();
 
 function findPreviewMuteButton(container) {
@@ -553,20 +559,25 @@ function previewIsUnmuted(btn, video) {
 
 function ensurePreviewMuted(container) {
   if (previewActed.has(container)) return;
-  previewActed.add(container);
+  if (isShortsPage()) return; // no hover previews on Shorts
+  if (isInRealPlayer(container)) return; // a wrapper around the real player
   const video = container.querySelector("video");
+  if (isInRealPlayer(video)) return; // the box holds the main video
+  previewActed.add(container);
 
   const doMute = () => {
     if (!container.isConnected) return;
     const b = findPreviewMuteButton(container);
     if (!b) return;
+    if (isInRealPlayer(b)) return; // never press the real player's mute
     if (previewIsUnmuted(b, video)) {
       try { b.click(); } catch (e) {}
     }
     setTimeout(() => {
       if (!container.isConnected) return;
       const b2 = findPreviewMuteButton(container);
-      if (b2 && previewIsUnmuted(b2, video)) {
+      if (!b2 || isInRealPlayer(b2)) return;
+      if (previewIsUnmuted(b2, video)) {
         try { b2.click(); } catch (e) {}
       }
     }, 300);
@@ -978,9 +989,9 @@ function parseChaptersFromDescription(description) {
     if (!before && !after) return;
     const ts = m[1], idx = m.index;
     let title;
-    if (idx === 0 || /^[-–—•·▪▫‣→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
+    if (idx === 0 || /^[-–—•·▪▫‣⁃→>*\s]+$/.test(trimmed.substring(0, idx))) title = trimmed.substring(idx + ts.length);
     else title = trimmed.substring(0, idx);
-    title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫‣⁃→>*\s]+$/, "").trim();
+    title = title.replace(/^[-–—•·▪▫‣⁃→>*\s]+/, "").replace(/[-–—•·▪▫‣→>*\s]+$/, "").trim();
     if (title.length < 2) return;
     list.push({ title, startMillis: timeStringToSeconds(ts) * 1000 });
   });
@@ -1394,8 +1405,6 @@ function applyNoTranslation() {
   applyOriginalChapters();
   applyEmbedTitle();
 }
-// First pass ~2.5s after navigation (after thumbnails paint); a second pass
-// at ~6s catches titles that render late. Both are one-shots per navigation.
 function scheduleFirstTranslationRun() {
   setTimeout(() => applyNoTranslation(), 2500);
   setTimeout(() => {
@@ -1404,28 +1413,18 @@ function scheduleFirstTranslationRun() {
 }
 
 // ---------- 11. Prevent accidental Shorts scrolling ----------
-// Motion-aware gating: while the reel is actually moving (snap/momentum in
-// progress) wheel events pass through so an in-flight snap is never frozen;
-// the instant the stage is at rest, sub-threshold wheels are blocked again.
-// This replaces the old blind 800ms "native" cooldown, which both let slight
-// touches scroll (right after a switch) and could interrupt a slow snap.
-let shortsWheelAccumulator = 0, shortsWheelResetTimer = null;
+// Every switch needs a deliberate scroll. Right after a successful switch
+// there is a short "settle" pause (~0.7s) where scrolling is ignored, so a
+// light bump can't chain into another switch and the current switch always
+// finishes cleanly. Side areas (comments, menus, header) always scroll.
+let shortsWheelAccumulator = 0, shortsWheelResetTimer = null, shortsSettleUntil = 0;
 const SHORTS_WHEEL_THRESHOLD = 200;
 const SHORTS_WHEEL_RESET_MS = 300;
-const SHORTS_STAGE_MOVING_MS = 400;
+const SHORTS_SETTLE_MS = 700;
 const SHORTS_WHEEL_EXEMPT_SELECTOR =
   "ytd-comments, ytd-engagement-panel-section-list-renderer, #panels, #secondary, #related, #guide, #masthead-container, header, ytd-rich-section-renderer, ytd-shelf-renderer";
 const SHORTS_WHEEL_STAGE_SELECTOR =
   "ytd-shorts, #shorts-container, #page-container, ytd-reel-video-renderer, #player-container";
-
-function onStageScrollCapture(e) {
-  if (!settings || !settings.enabled || !settings.disableShortsWheelScroll) return;
-  if (!isShortsPage()) return;
-  const t = e.target;
-  if (!(t instanceof Element)) return;
-  if (!t.closest(SHORTS_WHEEL_STAGE_SELECTOR)) return;
-  lastStageMoveTime = performance.now();
-}
 
 function handleShortsWheel(e) {
   if (!settings || !settings.enabled || !settings.disableShortsWheelScroll) return;
@@ -1433,8 +1432,14 @@ function handleShortsWheel(e) {
   if (!(e.target instanceof Element)) return;
   if (e.target.closest(SHORTS_WHEEL_EXEMPT_SELECTOR)) return;
   if (!e.target.closest(SHORTS_WHEEL_STAGE_SELECTOR)) return;
-  // Reel is mid-motion (snap/momentum): let wheel through so it finishes.
-  if (performance.now() - lastStageMoveTime < SHORTS_STAGE_MOVING_MS) return;
+  const now = performance.now();
+  // Settle pause: ignore all wheel right after a switch.
+  if (now < shortsSettleUntil) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    return;
+  }
   let delta = e.deltaY;
   if (e.deltaMode === 1) delta *= 30;
   if (e.deltaMode === 2) delta *= window.innerHeight;
@@ -1444,8 +1449,8 @@ function handleShortsWheel(e) {
   shortsWheelResetTimer = setTimeout(() => { shortsWheelAccumulator = 0; }, SHORTS_WHEEL_RESET_MS);
   if (Math.abs(shortsWheelAccumulator) >= SHORTS_WHEEL_THRESHOLD) {
     shortsWheelAccumulator = 0;
-    lastStageMoveTime = performance.now(); // snap about to start
-    return; // allow this event
+    shortsSettleUntil = now + SHORTS_SETTLE_MS;
+    return; // allow this event -> the switch happens
   }
   e.preventDefault();
   e.stopPropagation();
@@ -1496,7 +1501,6 @@ function init() {
   window.addEventListener("yt-page-data-updated", onNavigate);
   document.addEventListener("wheel", handleShortsWheel, { capture: true, passive: false });
   document.addEventListener("wheel", handleVolumeWheel, { capture: true, passive: false });
-  document.addEventListener("scroll", onStageScrollCapture, true);
   document.addEventListener("play", onVideoPlayCapture, true);
   document.addEventListener("playing", onVideoPlayingCapture, true);
   document.addEventListener("volumechange", onVolumeChangeCapture, true);
