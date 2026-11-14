@@ -1,32 +1,29 @@
 /* content.css - Youtube Player Improved */
 
-/* Mini player. The player element (#movie_player) itself never receives
-   any class, style or transform from this addon - all positioning and
-   sizing lives on a plain wrapper the player is moved into while
-   floating. */
-.ycc-mp-wrapper {
-  position: fixed !important;
-  z-index: 2147483647 !important;
-  border-radius: 10px !important;
-  overflow: hidden !important;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55) !important;
-  background: #000 !important;
-}
-.ycc-mp-corner-br { top: auto !important; left: auto !important; bottom: 20px !important; right: 20px !important; }
-.ycc-mp-corner-bl { top: auto !important; right: auto !important; bottom: 20px !important; left: 20px !important; }
-.ycc-mp-corner-tr { bottom: auto !important; left: auto !important; top: 20px !important; right: 20px !important; }
-.ycc-mp-corner-tl { bottom: auto !important; right: auto !important; top: 20px !important; left: 20px !important; }
-.ycc-mp-close {
-  position: absolute; top: 4px; right: 4px; z-index: 2147483647;
-  width: 22px; height: 22px; border-radius: 50%;
-  background: rgba(0, 0, 0, 0.65); color: #fff; border: none; cursor: pointer;
-  font-size: 13px; line-height: 22px; text-align: center; padding: 0;
-  opacity: 0; transition: opacity 0.15s ease;
-}
-.ycc-mp-wrapper:hover .ycc-mp-close { opacity: 1; }
-.ycc-mp-spacer { flex-shrink: 0; }
+/* Hide YouTube's "video isn't playing smoothly?" toast (any language). */
+.ycc-hide-toast { display: none !important; }
 
-/* Hide info cards and end screens - pure CSS switch toggled on <html>. */
+/* Mini player: all positioning lives on the wrapper, never on the player. */
+.ycc-mp-wrapper {
+  position: fixed !important; z-index: 2147483647 !important;
+  border-radius: 10px !important; overflow: hidden !important;
+  box-shadow: 0 10px 40px rgba(0,0,0,.55) !important; background: #000 !important;
+}
+.ycc-mp-corner-br { top:auto!important; left:auto!important; bottom:20px!important; right:20px!important; }
+.ycc-mp-corner-bl { top:auto!important; right:auto!important; bottom:20px!important; left:20px!important; }
+.ycc-mp-corner-tr { bottom:auto!important; left:auto!important; top:20px!important; right:20px!important; }
+.ycc-mp-corner-tl { bottom:auto!important; right:auto!important; top:20px!important; left:20px!important; }
+.ycc-mp-close {
+  position:absolute; top:4px; right:4px; z-index:2147483647;
+  width:22px; height:22px; border-radius:50%;
+  background:rgba(0,0,0,.65); color:#fff; border:none; cursor:pointer;
+  font-size:13px; line-height:22px; text-align:center; padding:0;
+  opacity:0; transition:opacity .15s ease;
+}
+.ycc-mp-wrapper:hover .ycc-mp-close { opacity:1; }
+.ycc-mp-spacer { flex-shrink:0; }
+
+/* Hide info cards and end screens. */
 .ycc-hide-cards-endscreens .ytp-cards-teaser,
 .ycc-hide-cards-endscreens .ytp-cards-button,
 .ycc-hide-cards-endscreens .ytp-ce-element,
@@ -34,15 +31,9 @@
 .ycc-hide-cards-endscreens .ytp-ce-covering-image,
 .ycc-hide-cards-endscreens .ytp-ce-expanding-overlay,
 .ycc-hide-cards-endscreens .html5-endscreen,
-.ycc-hide-cards-endscreens .iv-module {
-  display: none !important;
-}
+.ycc-hide-cards-endscreens .iv-module { display:none !important; }
 
-/* Hide the player's settings menus while the quality automation drives
-   them programmatically, so the panel never visibly pops open or flickers.
-   Covers both the classic class names and the newer role/panel-based
-   containers YouTube's current player uses. (content.js additionally hides
-   the exact menu root inline, so renamed containers are covered too.) */
+/* Hide settings menus while quality automation drives them. */
 html.ycc-quiet-menus .ytp-settings-menu,
 html.ycc-quiet-menus .ytp-panel-menu,
 html.ycc-quiet-menus .ytp-panel,
@@ -52,6 +43,4 @@ html.ycc-quiet-menus [role="menu"],
 html.ycc-quiet-menus .html5-video-player .ytp-menu,
 html.ycc-quiet-menus .html5-video-player [role="menu"],
 html.ycc-quiet-menus #movie_player .ytp-menu,
-html.ycc-quiet-menus #movie_player [role="menu"] {
-  display: none !important;
-}
+html.ycc-quiet-menus #movie_player [role="menu"] { display:none !important; }
