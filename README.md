@@ -1,11 +1,11 @@
 # Youtube Player Improved (Firefox Addon)
 
-**Version 1.3.22**
+**Version 1.3.23**
 
 A Firefox extension for YouTube with ten features, all controlled from one toolbar popup:
 
-- **Preferred quality** – forces a chosen quality (144p–4K or Auto) on every video, including embedded players. "Skip Premium quality options" (checked by default) skips Premium-only rows and hides the upsell popup invisibly; unchecked prefers Premium rows (assumes membership, never verifies). Gets 3 attempts plus an extra ~6 s check; closes any stray menu and still sets quality in the same pass.
-- **Default volume** – sets your volume when a video/Short starts AND immediately on every video/page change, guarded for ~5 s so the previous video's manual volume can't sneak back. After ~5 s your manual changes are respected. Only on /watch, /shorts, /embed (never feeds).
+- **Preferred quality** – forces a chosen quality (144p–4K or Auto) on every video, including embedded players. "Skip Premium quality options" (checked by default) skips Premium-only rows and hides the upsell popup invisibly; unchecked prefers Premium rows. 3 attempts + an extra ~6 s check; closes stray menus and still sets quality in the same pass.
+- **Default volume** – sets your volume when a video/Short starts AND on every video/page change, guarded ~5 s so the previous video's manual volume can't carry over. Only on /watch, /shorts, /embed.
 - **Block volume scroll** – the wheel over the player's volume control no longer changes volume.
 - **Mute hover previews** – only genuine preview boxes are touched; never the real player, never on Shorts pages.
 - **Prevent Shorts looping** – pauses a Short on its last frame. Off by default.
@@ -13,10 +13,8 @@ A Firefox extension for YouTube with ten features, all controlled from one toolb
 - **Captions control** – keeps captions always off/on; only on watch/Shorts/embed, at most once per 8 s.
 - **Mini player** – scrolling past the video floats it into a resizable corner window that keeps playing; scroll back or press ✕ to restore.
 - **Hide info cards & end screens** – removes the "i" teasers and end-screen grid, also in embeds.
-- **No translations** – restores original titles/descriptions/chapters across all YouTube pages; deferred, throttled and cached.
+- **No translations** – restores original titles/descriptions/chapters across all YouTube pages. On Shorts, the main title is always matched to the video in the address bar (never to a sound/remix link inside the reel), so a wrong video's title can no longer be printed; the sound-name line is left untouched.
 - **Prevent accidental Shorts scrolling** – a deliberate scroll performs one complete, clean switch and briefly ignores the wheel while it settles.
-
-(The "hide the smoothness toast" experiment was removed in 1.3.22.)
 
 Everything is toggleable; the popup also has "Reset to defaults" and "Report a bug" (GitHub issues).
 

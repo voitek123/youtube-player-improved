@@ -4,7 +4,7 @@
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.22";
+const BUILD_TAG = "ypi-1.3.23";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -147,8 +147,6 @@ function isMainVideoForVolume(v) {
   return v.classList.contains("html5-main-video");
 }
 
-// Volume is enforced during the per-video start window AND for ~5s after
-// each navigation, so YouTube's late "restore previous volume" can't win.
 function volumeEnforcing(now) {
   if (volumeWindowUntil && now < volumeWindowUntil) return true;
   if (lastNavigationTime && now - lastNavigationTime < 5000) return true;
@@ -260,7 +258,6 @@ async function applyResolution() {
   const settingsBtn = player.querySelector(".ytp-settings-button");
   if (!settingsBtn) return;
 
-  // Close any stray/open menu first, then CONTINUE (don't waste the pass).
   for (let i = 0; i < 3 && menuVisible(player, settingsBtn); i++) { settingsBtn.click(); await wait(120); }
 
   if (!mpFloating) {
@@ -796,12 +793,21 @@ async function applyEmbedTitle() {
   markOriginalApplied(l, k);
 }
 
+// NOTE: no `ytd-reel-video-renderer #title` here - on the Shorts watch page
+// that node is the sound/remix name, not the video title.
 const FEED_TITLE_SELECTOR =
-  "#video-title, h3[title] > a > span[role='text'], h3 > a > span[role='text'], yt-lockup-view-model h3 span[role='text'], yt-lockup-view-model [slot='title'] span, ytd-rich-grid-media #video-title, ytd-rich-grid-media h3 a span, yt-shorts-video-title-view-model h1 span[role='text'], yt-shorts-video-title-view-model h2 span[role='text'], yt-shorts-video-title-view-model [class*='ShortsVideoTitle'] span, ytd-reel-video-renderer #title, ytd-notification-renderer #message yt-formatted-string, #notification-title";
+  "#video-title, h3[title] > a > span[role='text'], h3 > a > span[role='text'], yt-lockup-view-model h3 span[role='text'], yt-lockup-view-model [slot='title'] span, ytd-rich-grid-media #video-title, ytd-rich-grid-media h3 a span, yt-shorts-video-title-view-model h1 span[role='text'], yt-shorts-video-title-view-model h2 span[role='text'], yt-shorts-video-title-view-model [class*='ShortsVideoTitle'] span, ytd-notification-renderer #message yt-formatted-string, #notification-title";
 const CARD_SELECTOR =
   "ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, ytd-reel-item-renderer, ytd-reel-video-renderer, ytd-notification-renderer, yt-lockup-view-model, ytd-rich-grid-media";
 
 function getTitleVideoId(el) {
+  // On the Shorts watch page the main title always belongs to the video in
+  // the address bar. Never resolve it from a link inside the reel - those
+  // links point to the background sound/remix (a different video), which
+  // previously caused a wrong title to be printed.
+  if (isShortsPage() && el.closest("yt-shorts-video-title-view-model, ytd-reel-video-renderer[is-active]")) {
+    return getVideoIdFromUrl(location.href);
+  }
   let link = el.closest("a");
   if (!link) { const c = el.closest(CARD_SELECTOR); link = c && c.querySelector('a[href^="/watch"], a[href^="/shorts/"]'); }
   let id = getVideoIdFromUrl(link && link.getAttribute("href"));
