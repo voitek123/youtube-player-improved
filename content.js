@@ -4,7 +4,7 @@
 (function () {
 "use strict";
 
-const BUILD_TAG = "ypi-1.3.21";
+const BUILD_TAG = "ypi-1.3.22";
 
 const QUALITY_LABELS = {
   auto: "Auto", hd2160: "2160p", hd1440: "1440p", hd1080: "1080p",
@@ -28,8 +28,6 @@ const KEY_GROUPS = {
 const HOVER_PREVIEW_SELECTOR =
   "ytd-video-preview, #video-preview, .ytd-video-preview, ytd-video-preview-renderer, ytd-hover-card-view-model";
 const REAL_PLAYER_SELECTOR = "#movie_player, #shorts-player, #c4-player, ytd-miniplayer";
-const SMOOTHNESS_RE = /płynnie|smoothly|flüssig|fluide|fluido|suave/i;
-const TOAST_SELECTOR = 'tp-yt-paper-toast, ytd-toast, yt-toast, [class*="toast" i], [role="status"]';
 
 let settings = {};
 let navigateTimer = null;
@@ -41,6 +39,7 @@ let qualityRetryTimer = null;
 let expandAppliedUrl = null;
 let lastCaptionsToggle = 0;
 let volumeWindowUntil = 0;
+let lastNavigationTime = 0;
 const shortsVolumeWindows = new WeakMap();
 let lastNavVideoId = null;
 let titleRescanTimer = null;
@@ -148,6 +147,14 @@ function isMainVideoForVolume(v) {
   return v.classList.contains("html5-main-video");
 }
 
+// Volume is enforced during the per-video start window AND for ~5s after
+// each navigation, so YouTube's late "restore previous volume" can't win.
+function volumeEnforcing(now) {
+  if (volumeWindowUntil && now < volumeWindowUntil) return true;
+  if (lastNavigationTime && now - lastNavigationTime < 5000) return true;
+  return false;
+}
+
 function isOptionDisabled(el) {
   if (el.getAttribute("aria-disabled") === "true" || el.hasAttribute("disabled")) return true;
   const cls = (el.className || "").toString().toLowerCase();
@@ -161,22 +168,7 @@ function isPremiumRow(o) {
   return /premium/i.test(o.textContent || "") || !!o.querySelector('[class*="premium" i]');
 }
 
-// ---------- Toast + Premium suppression ----------
-
-function suppressSmoothnessToasts(root) {
-  if (!root || !root.querySelectorAll) return;
-  const nodes = [];
-  if (root.matches && root.matches(TOAST_SELECTOR)) nodes.push(root);
-  root.querySelectorAll(TOAST_SELECTOR).forEach((n) => nodes.push(n));
-  for (const t of nodes) {
-    if (t.dataset.yccToastHidden) continue;
-    if (SMOOTHNESS_RE.test(t.textContent || "")) {
-      t.dataset.yccToastHidden = "1";
-      t.classList.add("ycc-hide-toast");
-    }
-  }
-}
-
+// ---------- Premium upsell suppression ----------
 const PREMIUM_DIALOG_SELECTOR = 'tp-yt-paper-dialog, [role="dialog"]';
 
 function suppressPremiumDialogs(root) {
@@ -198,14 +190,10 @@ let premiumSuppressObserver = null;
 function startPremiumSuppressor() {
   if (premiumSuppressObserver) return;
   premiumSuppressObserver = new MutationObserver((muts) => {
-    if (!settings || !settings.enabled) return;
-    for (const m of muts) {
-      m.addedNodes.forEach((node) => {
-        if (node.nodeType !== 1 || !node.matches) return;
-        if (settings.blockPremiumPromos !== false && node.matches(PREMIUM_DIALOG_SELECTOR)) suppressPremiumDialogs(node);
-        if (node.matches(TOAST_SELECTOR)) suppressSmoothnessToasts(node);
-      });
-    }
+    if (!settings || !settings.enabled || settings.blockPremiumPromos === false) return;
+    for (const m of muts) m.addedNodes.forEach((node) => {
+      if (node.nodeType === 1 && node.matches && node.matches(PREMIUM_DIALOG_SELECTOR)) suppressPremiumDialogs(node);
+    });
   });
   premiumSuppressObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
@@ -213,10 +201,9 @@ function startPremiumSuppressor() {
 function startPremiumSweep() {
   if (premiumSweepInterval) return;
   premiumSweepInterval = setInterval(() => {
-    if (!settings || !settings.enabled) return;
+    if (!settings || !settings.enabled || settings.blockPremiumPromos === false) return;
     const pc = getPopupContainer();
-    if (settings.blockPremiumPromos !== false && pc) suppressPremiumDialogs(pc);
-    suppressSmoothnessToasts(document.body);
+    if (pc) suppressPremiumDialogs(pc);
   }, 2000);
 }
 
@@ -253,7 +240,7 @@ async function applyResolution() {
   if (!settings.enabled || !settings.resolutionEnabled) return;
   if (resolutionInFlight || isShortsPage()) return;
   const currentId = getVideoIdFromUrl(location.href);
-  if (!currentId || qualityAppliedId === currentId || qualityAttempts >= 2) return;
+  if (!currentId || qualityAppliedId === currentId || qualityAttempts >= 3) return;
   const player = getPlayer();
   if (!player || isAdShowing(player)) return;
 
@@ -273,10 +260,8 @@ async function applyResolution() {
   const settingsBtn = player.querySelector(".ytp-settings-button");
   if (!settingsBtn) return;
 
-  if (menuVisible(player, settingsBtn)) {
-    for (let i = 0; i < 3 && menuVisible(player, settingsBtn); i++) { settingsBtn.click(); await wait(120); }
-    return;
-  }
+  // Close any stray/open menu first, then CONTINUE (don't waste the pass).
+  for (let i = 0; i < 3 && menuVisible(player, settingsBtn); i++) { settingsBtn.click(); await wait(120); }
 
   if (!mpFloating) {
     const r = player.getBoundingClientRect();
@@ -361,11 +346,11 @@ function setVolumeTo(video, target) {
 }
 
 function scheduleVolumeReasserts(video, target) {
-  [200, 1000, 2000, 3000].forEach((d) => setTimeout(() => {
+  [200, 1000, 2000, 3000, 4000, 5000].forEach((d) => setTimeout(() => {
     if (!settings || !settings.enabled || !settings.fixedVolumeEnabled || !isVolumePageAllowed()) return;
     const now = Date.now();
-    if (isShortsPage()) { const u = shortsVolumeWindows.get(video); if (!u || now >= u) return; }
-    else if (!volumeWindowUntil || now >= volumeWindowUntil) return;
+    if (isShortsPage()) { const u = shortsVolumeWindows.get(video); if (!((u && now < u) || volumeEnforcing(now))) return; }
+    else if (!volumeEnforcing(now)) return;
     setVolumeTo(video, target);
   }, d));
 }
@@ -393,8 +378,8 @@ function onVolumeChangeCapture(e) {
   const v = e.target; if (!(v instanceof HTMLVideoElement)) return;
   const now = Date.now();
   const target = Math.min(100, Math.max(0, Math.round(settings.fixedVolume ?? 50)));
-  if (isShortsPage()) { const u = shortsVolumeWindows.get(v); if (!u || now >= u) return; setVolumeTo(v, target); return; }
-  if (!isMainVideoForVolume(v) || !volumeWindowUntil || now >= volumeWindowUntil) return;
+  if (isShortsPage()) { const u = shortsVolumeWindows.get(v); if ((u && now < u) || volumeEnforcing(now)) setVolumeTo(v, target); return; }
+  if (!isMainVideoForVolume(v) || !volumeEnforcing(now)) return;
   setVolumeTo(v, target);
 }
 
@@ -959,9 +944,6 @@ function scheduleFirstTranslationRun() {
 }
 
 // ---------- 11. Prevent accidental Shorts scrolling ----------
-// A deliberate scroll performs ONE complete switch (YouTube's own up/down
-// button, or a full-video scroll fallback). The wheel is ignored during a
-// short settle window so the switch always finishes and never chains.
 let shortsWheelAccumulator = 0, shortsWheelResetTimer = null, shortsSettleUntil = 0;
 const SHORTS_WHEEL_THRESHOLD = 200;
 const SHORTS_WHEEL_RESET_MS = 300;
@@ -977,7 +959,6 @@ function switchShorts(dir) {
   const wrap = dir > 0 ? down : up;
   const btn = wrap && (wrap.querySelector("button") || wrap);
   if (btn && typeof btn.click === "function") { btn.click(); return; }
-  // Fallback: scroll the reel container by exactly one video height.
   let sc = document.querySelector("ytd-reel-video-renderer[is-active], ytd-reel-video-renderer");
   while (sc && sc !== document.body) {
     const st = getComputedStyle(sc);
@@ -1028,9 +1009,12 @@ function onNavigate() {
     lastNavVideoId = id; volumeAppliedUrl = null; qualityAppliedId = null;
     qualityAttempts = 0; expandAppliedUrl = null; titleRescanCount = 0;
   }
+  lastNavigationTime = Date.now();
+  applyVolumeNow();
   navigateTimer = setTimeout(applyAll, 400);
   setTimeout(applyAll, 1200);
   setTimeout(applyResolution, 4000);
+  setTimeout(applyResolution, 6000);
   scheduleFirstTranslationRun();
 }
 

@@ -1,21 +1,22 @@
 # Youtube Player Improved (Firefox Addon)
 
-**Version 1.3.21**
+**Version 1.3.22**
 
-A Firefox extension for YouTube with eleven features, all controlled from one toolbar popup:
+A Firefox extension for YouTube with ten features, all controlled from one toolbar popup:
 
-- **Preferred quality** – forces a chosen quality (144p–4K or Auto) on every video, including embedded players. "Skip Premium quality options" (checked by default) skips Premium-only rows and hides the upsell popup invisibly; unchecked prefers Premium rows (assumes membership, never verifies). Runs at most twice per video, only once the player has real data, finds the settings menu even if YouTube moves it, and always closes it again.
-- **Default volume** – sets your volume when a video/Short actually starts, only on /watch, /shorts and /embed (never on feeds). A ~3.5 s protection window beats YouTube's delayed volume restore; afterwards the volume is yours.
+- **Preferred quality** – forces a chosen quality (144p–4K or Auto) on every video, including embedded players. "Skip Premium quality options" (checked by default) skips Premium-only rows and hides the upsell popup invisibly; unchecked prefers Premium rows (assumes membership, never verifies). Gets 3 attempts plus an extra ~6 s check; closes any stray menu and still sets quality in the same pass.
+- **Default volume** – sets your volume when a video/Short starts AND immediately on every video/page change, guarded for ~5 s so the previous video's manual volume can't sneak back. After ~5 s your manual changes are respected. Only on /watch, /shorts, /embed (never feeds).
 - **Block volume scroll** – the wheel over the player's volume control no longer changes volume.
-- **Mute hover previews** – only genuine preview boxes are touched; never the real player (video/Shorts/channel/mini-player), never on Shorts pages, so your actual video can't be muted by accident.
+- **Mute hover previews** – only genuine preview boxes are touched; never the real player, never on Shorts pages.
 - **Prevent Shorts looping** – pauses a Short on its last frame. Off by default.
 - **Auto-expand player** – switches videos into theater mode.
 - **Captions control** – keeps captions always off/on; only on watch/Shorts/embed, at most once per 8 s.
 - **Mini player** – scrolling past the video floats it into a resizable corner window that keeps playing; scroll back or press ✕ to restore.
 - **Hide info cards & end screens** – removes the "i" teasers and end-screen grid, also in embeds.
-- **No translations** – restores original titles/descriptions/chapters across all YouTube pages; deferred, throttled and cached so it never slows the feed.
-- **Prevent accidental Shorts scrolling** – a deliberate scroll performs one complete, clean switch (YouTube's own up/down button or a full-video scroll) and briefly ignores the wheel while it settles, so it never stops halfway and never chains accidental switches.
-- **Hide the "video isn't playing smoothly?" toast** – the white box that sometimes appears at video start is hidden automatically, in any language.
+- **No translations** – restores original titles/descriptions/chapters across all YouTube pages; deferred, throttled and cached.
+- **Prevent accidental Shorts scrolling** – a deliberate scroll performs one complete, clean switch and briefly ignores the wheel while it settles.
+
+(The "hide the smoothness toast" experiment was removed in 1.3.22.)
 
 Everything is toggleable; the popup also has "Reset to defaults" and "Report a bug" (GitHub issues).
 
@@ -27,11 +28,7 @@ Everything is toggleable; the popup also has "Reset to defaults" and "Report a b
 
 ## Performance
 
-No whole-document polling. Observers do a single cheap check per added node; the Premium/toast sweep is a 2 s pass over the small popup area; heavy translation scans run once ~2.5 s after navigation (plus a ~6 s pass), never from the heartbeat, and afterwards only on settled mutations with a fetch budget and a cache. Background heartbeat is 10 s of cheap self-checks. With toggles off the addon is essentially idle.
-
-## How it works (brief)
-
-Settings live in `browser.storage.local` and sync live to the content script. Quality drives YouTube's own settings menu (player → popup container → document) and hides it while automating. Volume targets only the real content video by explicit player IDs. Preview muting clicks the preview's own corner mute button once, at playback start, with a single verify pass. Shorts scrolling performs a full switch via YouTube's navigation buttons (or a one-video scroll) and ignores the wheel during an ~0.8 s settle window. The smoothness toast and Premium dialogs are hidden by a cheap observer plus a scoped sweep. No-translations reads the canonical title from the player API (oEmbed/InnerTube/watch-page fallbacks), writes only the inner title node, removes `is-empty`, and caches results.
+No whole-document polling. Observers do a single cheap check per added node; the Premium sweep is a 2 s pass over the small popup area; heavy translation scans run once ~2.5 s after navigation (plus ~6 s), never from the heartbeat, and afterwards only on settled mutations with a fetch budget and cache. Background heartbeat is 10 s of cheap self-checks. With toggles off the addon is essentially idle.
 
 ## Folder contents
 

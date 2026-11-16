@@ -1,8 +1,5 @@
 /* content.css - Youtube Player Improved */
 
-/* Hide YouTube's "video isn't playing smoothly?" toast (any language). */
-.ycc-hide-toast { display: none !important; }
-
 /* Mini player: all positioning lives on the wrapper, never on the player. */
 .ycc-mp-wrapper {
   position: fixed !important; z-index: 2147483647 !important;

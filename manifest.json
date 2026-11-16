@@ -1,63 +1,26 @@
 {
   "manifest_version": 2,
   "name": "Youtube Player Improved",
-  "version": "1.3.21",
+  "version": "1.3.22",
   "description": "Preferred quality, default volume, block volume scroll, mute hover previews, stop Shorts looping, auto-expand, captions control, mini player, hide cards/end screens, original titles/descriptions/chapters, deliberate Shorts scrolling.",
   "author": "Youtube Player Improved",
   "browser_specific_settings": {
     "gecko": {
       "id": "youtube-player-improved@local.addon",
       "strict_min_version": "142.0",
-      "data_collection_permissions": {
-        "required": ["none"],
-        "optional": []
-      }
+      "data_collection_permissions": { "required": ["none"], "optional": [] }
     }
   },
-  "icons": {
-    "16": "icons/icon16.png",
-    "32": "icons/icon32.png",
-    "48": "icons/icon48.png",
-    "96": "icons/icon96.png",
-    "128": "icons/icon128.png"
-  },
-  "permissions": [
-    "storage",
-    "*://*.youtube.com/*",
-    "*://*.youtube-nocookie.com/*"
-  ],
-  "background": {
-    "scripts": ["background.js"],
-    "persistent": false
-  },
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "96": "icons/icon96.png", "128": "icons/icon128.png" },
+  "permissions": ["storage", "*://*.youtube.com/*", "*://*.youtube-nocookie.com/*"],
+  "background": { "scripts": ["background.js"], "persistent": false },
   "browser_action": {
     "default_popup": "popup.html",
-    "default_icon": {
-      "16": "icons/icon16.png",
-      "32": "icons/icon32.png",
-      "48": "icons/icon48.png"
-    },
+    "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png" },
     "default_title": "Youtube Player Improved"
   },
   "content_scripts": [
-    {
-      "matches": ["*://www.youtube.com/*", "*://m.youtube.com/*"],
-      "js": ["content.js"],
-      "css": ["content.css"],
-      "run_at": "document_idle",
-      "all_frames": false
-    },
-    {
-      "matches": [
-        "*://www.youtube.com/embed/*",
-        "*://youtube.com/embed/*",
-        "*://www.youtube-nocookie.com/embed/*",
-        "*://youtube-nocookie.com/embed/*"
-      ],
-      "js": ["content.js"],
-      "css": ["content.css"],
-      "run_at": "document_idle",
-      "all_frames": true
-    }
+    { "matches": ["*://www.youtube.com/*", "*://m.youtube.com/*"], "js": ["content.js"], "css": ["content.css"], "run_at": "document_idle", "all_frames": false },
+    { "matches": ["*://www.youtube.com/embed/*", "*://youtube.com/embed/*", "*://www.youtube-nocookie.com/embed/*", "*://youtube-nocookie.com/embed/*"], "js": ["content.js"], "css": ["content.css"], "run_at": "document_idle", "all_frames": true }
   ]
 }
